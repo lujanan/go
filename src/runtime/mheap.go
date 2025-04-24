@@ -25,7 +25,7 @@ const (
 	minPhysPageSize = 4096
 
 	// maxPhysPageSize is the maximum page size the runtime supports.
-	// maxPhysPageSize 是运行时支持的最大页大小。
+	// maxPhysPageSize 是运行时支持的最大页大小。512kb
 	maxPhysPageSize = 512 << 10
 
 	// maxPhysHugePageSize sets an upper-bound on the maximum huge page size
