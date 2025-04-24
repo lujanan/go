@@ -69,7 +69,7 @@
 //
 // 分配小对象时，会按照以下缓存层次结构进行：
 //
-//	1. 将大小四舍五入到小大小类之一，
+//	1. 将向上取整到满足size大小的最小类别的size classes，
 //	   并在当前 P 的 mcache 中查找对应的 mspan。
 //	   扫描 mspan 的空闲位图以找到空闲槽。
 //	   如果有空闲槽，就分配它。
@@ -207,7 +207,7 @@ const (
 	_TinySize      = 16      // 微小对象的最大大小
 	_TinySizeClass = int8(2) // 微小对象的大小类别
 
-	_FixAllocChunk = 16 << 10 // Chunk size for FixAlloc // FixAlloc的块大小，16KB
+	_FixAllocChunk = 16 << 10 // Chunk size for FixAlloc // FixAlloc的块大小，16KB = 1 << 14 = 2^14
 
 	// Per-P, per order stack segment cache size.
 	_StackCacheSize = 32 * 1024 // 每个P的每个阶的栈段缓存大小，32KB
