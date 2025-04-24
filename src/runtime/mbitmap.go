@@ -3,24 +3,34 @@
 // license that can be found in the LICENSE file.
 
 // Garbage collector: type and heap bitmaps.
+// 垃圾回收器：类型和堆位图。
 //
 // Stack, data, and bss bitmaps
+// 栈、数据段和bss段的位图
 //
 // Stack frames and global variables in the data and bss sections are
 // described by bitmaps with 1 bit per pointer-sized word. A "1" bit
 // means the word is a live pointer to be visited by the GC (referred to
 // as "pointer"). A "0" bit means the word should be ignored by GC
 // (referred to as "scalar", though it could be a dead pointer value).
+// 栈帧以及数据段和bss段中的全局变量使用位图来描述，每个指针大小的字对应1位。
+// "1"位表示该字是一个需要被GC访问的存活指针（称为"pointer"）。
+// "0"位表示该字应该被GC忽略（称为"scalar"，尽管它可能是一个死指针值）。
 //
 // Heap bitmaps
+// 堆位图
 //
 // The heap bitmap comprises 1 bit for each pointer-sized word in the heap,
 // recording whether a pointer is stored in that word or not. This bitmap
 // is stored at the end of a span for small objects and is unrolled at
 // runtime from type metadata for all larger objects. Objects without
 // pointers have neither a bitmap nor associated type metadata.
+// 堆位图对堆中每个指针大小的字使用1位来记录该字是否存储了指针。
+// 对于小对象，这个位图存储在span的末尾；对于所有较大的对象，位图在运行时从类型元数据展开。
+// 不包含指针的对象既没有位图也没有相关的类型元数据。
 //
 // Bits in all cases correspond to words in little-endian order.
+// 在所有情况下，位都按照小端序对应到字。
 //
 // For small objects, if s is the mspan for the span starting at "start",
 // then s.heapBits() returns a slice containing the bitmap for the whole span.
@@ -30,6 +40,10 @@
 // fits in goarch.PtrSize*8 bits, so writing out bitmap data takes two bitmap
 // writes at most (because object boundaries don't generally lie on
 // s.heapBits()[i] boundaries).
+// 对于小对象，如果s是起始于"start"的span的mspan，那么s.heapBits()返回包含整个span位图的切片。
+// 也就是说，s.heapBits()[0]包含了从"start"到"start+63*ptrSize"的前goarch.PtrSize*8个字的goarch.PtrSize*8位。
+// 另外，小对象总是足够小，它们的位图可以放入goarch.PtrSize*8位中，所以写出位图数据最多需要两次位图写入
+//（因为对象边界通常不在s.heapBits()[i]边界上）。
 //
 // For larger objects, if t is the type for the object starting at "start",
 // within some span whose mspan is s, then the bitmap at t.GCData is "tiled"
@@ -45,13 +59,22 @@
 // object, but any unused data within the allocation slot (i.e. within s.elemsize)
 // is zeroed, so the GC just observes nil pointers.
 // Note that this "tiled" bitmap isn't stored anywhere; it is generated on-the-fly.
+// 对于较大的对象，如果t是起始于"start"的对象的类型，在某个mspan为s的span内，那么t.GCData处的位图会从"start"到"start+s.elemsize"进行"平铺"。
+// 具体来说，t.GCData的第一位对应"start"处的字，第二位对应"start"后的字，以此类推直到t.PtrBytes。
+// 在t.PtrBytes处，我们跳到"start+t.Size_"并从那里重新开始。这个过程会重复直到达到"start+s.elemsize"。
+// 这个平铺算法支持数组数据，因为类型总是引用数组的元素类型。单个对象被视为单元素数组。
+// 平铺算法可能会扫描超出编译器识别的对象末尾的数据，但分配槽内任何未使用的数据（即在s.elemsize内）都被置零，
+// 所以GC只会观察到nil指针。注意这个"平铺"的位图并不存储在任何地方；它是动态生成的。
 //
 // For objects without their own span, the type metadata is stored in the first
 // word before the object at the beginning of the allocation slot. For objects
 // with their own span, the type metadata is stored in the mspan.
+// 对于没有自己span的对象，类型元数据存储在分配槽开始处对象之前的第一个字中。
+// 对于有自己span的对象，类型元数据存储在mspan中。
 //
 // The bitmap for small unallocated objects in scannable spans is not maintained
 // (can be junk).
+// 可扫描span中未分配的小对象的位图不会被维护（可能是垃圾数据）。
 
 package runtime
 
@@ -68,6 +91,8 @@ const (
 	// we need to use 8 here to ensure 8-byte alignment of allocations
 	// on 32-bit platforms. It's wasteful, but a lot of code relies on
 	// 8-byte alignment for 8-byte atomics.
+	// malloc header 在功能上是一个单一的类型指针，但我们需要使用8来确保在32位平台上分配的内存是8字节对齐的。
+	// 这虽然有些浪费，但很多代码都依赖于8字节对齐来实现8字节原子操作。
 	mallocHeaderSize = 8
 
 	// The minimum object size that has a malloc header, exclusive.
@@ -98,6 +123,25 @@ const (
 	// would not be invariant to size-class rounding. Eschewing this property means a
 	// more complex check or possibly storing additional state to determine whether a
 	// span has malloc headers.
+	// 具有 malloc header 的最小对象大小（不包含该大小）。
+	//
+	// 这个值的大小控制着 malloc header 带来的开销。
+	// 最小大小受 writeHeapBitsSmall 的限制，它假设小于这个大小的对象的指针位图不会跨越
+	// 超过一个指针字边界。这为该值设置了一个上限，即 uintptr 的位数乘以指针大小（字节）。
+	//
+	// 我们在这里选择一个在内存开销方面有自然分界点的值。这个值恰好是可能的最大值。
+	//
+	// 包含堆位图的 span 在64位平台上有128字节的堆位图，在32位平台上有256字节的堆位图。
+	// 在64位平台上，第一个 malloc header 开销匹配的大小类是512字节
+	// (8 KiB / 512 bytes * 8 bytes-per-header = 128 bytes 开销)。
+	// 在32位平台上，这个点是256字节大小类
+	// (8 KiB / 256 bytes * 8 bytes-per-header = 256 bytes 开销)。
+	//
+	// 保证正好在大小类边界上。这个值作为不包含的最小值的原因很微妙。
+	// 假设我们分配一个504字节的对象，它被向上取整到512字节作为大小类。
+	// 如果 minSizeForMallocHeader 是512且是包含的最小值，那么对这两个值的比较会产生不同的结果。
+	// 换句话说，比较不会对大小类取整保持不变。避免这个特性意味着需要更复杂的检查，
+	// 或者可能需要存储额外的状态来确定 span 是否有 malloc header。
 	minSizeForMallocHeader = goarch.PtrSize * ptrBits
 )
 
