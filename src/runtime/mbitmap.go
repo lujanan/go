@@ -142,6 +142,7 @@ const (
 	// 如果 minSizeForMallocHeader 是512且是包含的最小值，那么对这两个值的比较会产生不同的结果。
 	// 换句话说，比较不会对大小类取整保持不变。避免这个特性意味着需要更复杂的检查，
 	// 或者可能需要存储额外的状态来确定 span 是否有 malloc header。
+	// 512
 	minSizeForMallocHeader = goarch.PtrSize * ptrBits
 )
 
@@ -1087,9 +1088,16 @@ func (s *mspan) allocBitsForIndex(allocBitIndex uintptr) markBits {
 // and negates them so that ctz (count trailing zeros) instructions
 // can be used. It then places these 8 bytes into the cached 64 bit
 // s.allocCache.
+// refillAllocCache 从 whichByte 开始获取 s.allocBits 的 8 个字节，
+// 并对它们取反，以便可以使用 ctz（计算尾随零）指令。
+// 然后将这 8 个字节放入缓存的 64 位 s.allocCache 中。
 func (s *mspan) refillAllocCache(whichByte uint16) {
+	// 获取从 whichByte 开始的 8 个字节的指针
 	bytes := (*[8]uint8)(unsafe.Pointer(s.allocBits.bytep(uintptr(whichByte))))
+	// 初始化 64 位缓存
 	aCache := uint64(0)
+	// 将 8 个字节按位组合成一个 64 位整数
+	// 每个字节左移相应的位数后与 aCache 进行按位或操作
 	aCache |= uint64(bytes[0])
 	aCache |= uint64(bytes[1]) << (1 * 8)
 	aCache |= uint64(bytes[2]) << (2 * 8)
@@ -1098,6 +1106,7 @@ func (s *mspan) refillAllocCache(whichByte uint16) {
 	aCache |= uint64(bytes[5]) << (5 * 8)
 	aCache |= uint64(bytes[6]) << (6 * 8)
 	aCache |= uint64(bytes[7]) << (7 * 8)
+	// 对组合后的 64 位整数取反，存入 allocCache
 	s.allocCache = ^aCache
 }
 
@@ -1105,6 +1114,8 @@ func (s *mspan) refillAllocCache(whichByte uint16) {
 // or after s.freeindex.
 // There are hardware instructions that can be used to make this
 // faster if profiling warrants it.
+// nextFreeIndex 返回 s 中从 s.freeindex 开始或之后的第一个空闲对象的索引。
+// 如果性能分析表明有必要，可以使用硬件指令来加速这个过程。
 func (s *mspan) nextFreeIndex() uint16 {
 	sfreeindex := s.freeindex
 	snelems := s.nelems
@@ -1120,6 +1131,7 @@ func (s *mspan) nextFreeIndex() uint16 {
 	bitIndex := sys.TrailingZeros64(aCache)
 	for bitIndex == 64 {
 		// Move index to start of next cached bits.
+		// 将索引移动到下一个缓存位的开始位置。
 		sfreeindex = (sfreeindex + 64) &^ (64 - 1)
 		if sfreeindex >= snelems {
 			s.freeindex = snelems
@@ -1127,11 +1139,14 @@ func (s *mspan) nextFreeIndex() uint16 {
 		}
 		whichByte := sfreeindex / 8
 		// Refill s.allocCache with the next 64 alloc bits.
+		// 用接下来的64个分配位重新填充 s.allocCache。
 		s.refillAllocCache(whichByte)
 		aCache = s.allocCache
 		bitIndex = sys.TrailingZeros64(aCache)
 		// nothing available in cached bits
 		// grab the next 8 bytes and try again.
+		// 缓存位中没有可用的位
+		// 获取下一个8字节并重试。
 	}
 	result := sfreeindex + uint16(bitIndex)
 	if result >= snelems {
@@ -1148,6 +1163,10 @@ func (s *mspan) nextFreeIndex() uint16 {
 		// it was shifted away. At this point s.allocCache contains all 0s.
 		// Refill s.allocCache so that it corresponds
 		// to the bits at s.allocBits starting at s.freeindex.
+		// 我们刚刚增加了 s.freeindex，所以它不是0。
+		// 当 s.allocCache 中的每个1被遇到并用于分配时，
+		// 它就被移除了。此时 s.allocCache 包含全0。
+		// 重新填充 s.allocCache，使其对应从 s.freeindex 开始的 s.allocBits 中的位。
 		whichByte := sfreeindex / 8
 		s.refillAllocCache(whichByte)
 	}
