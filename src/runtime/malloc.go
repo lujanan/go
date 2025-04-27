@@ -422,6 +422,7 @@ const (
 	// pagesPerArena 是每个 arena 包含的页数。
 	// 由于 arena 大小是 heapArenaBytes，而每页大小是 pageSize，
 	// 所以每个 arena 包含的页数就是 heapArenaBytes/pageSize。
+	// 64位系统上 heapArenaBytes(64M=64*1024*1024) / pageSize(8kb=8*1024) = 8192
 	pagesPerArena = heapArenaBytes / pageSize
 
 	// arenaL1Bits is the number of bits of the arena number

@@ -45,6 +45,37 @@
 // additional virtual address space. The choice of managing large arrays also means
 // that a large amount of virtual address space may be reserved by the runtime.
 
+// 页面分配器。
+//
+// 页面分配器管理映射页面（由 pageSize 定义，而不是 physPageSize）用于分配和重用。
+// 它被嵌入到 mheap 中。
+//
+// 页面使用位图进行管理，位图被分片成多个块。
+// 在位图中，1 表示正在使用，0 表示空闲。位图跨越进程的地址空间。
+// 块使用类似 mheap.arenas 的稀疏数组结构进行管理，因为位图在某些系统上可能很大。
+//
+// 位图通过结合基数树和快速位操作内部函数进行高效搜索。
+// 分配使用地址有序的首次适应方法进行。
+//
+// 基数树中的每个条目都是一个摘要，描述了地址空间特定区域的三个属性：
+// 该区域开始和结束处的连续空闲页面数量，以及在该区域任何位置找到的最大连续空闲页面数量。
+//
+// 基数树的每一层都存储为一个连续数组，表示进程地址空间的不同粒度细分。
+// 因此，这个基数树实际上隐含在这些大数组中，而不是使用显式的动态分配的基于指针的节点结构。
+// 自然地，这些数组对于具有大地址空间的系统可能相当大，所以在这些情况下，
+// 它们会根据需要映射到内存中。树的叶节点摘要对应于位图块。
+//
+// 根级别（在 pageAlloc.summary 中称为 L0 和索引 0）的每个摘要表示地址空间的最大部分
+//（在 64 位系统上为 16 GiB），每个后续级别表示越来越小的子部分，直到我们在叶节点达到最细粒度，即一个块。
+//
+// 更具体地说，每个级别中的每个摘要（除了叶节点摘要）表示下一级别中的一些条目。
+// 例如，根级别的每个摘要可能表示 16 GiB 的地址空间区域，在下一级别可能有 8 个对应条目，
+// 每个表示该 16 GiB 区域的 2 GiB 子部分，每个子部分可能对应下一级别中的 8 个条目，
+// 每个表示 256 MiB 区域，以此类推。
+//
+// 因此，这种设计只能扩展到一定大小的堆，但始终可以通过简单地向基数树添加级别来扩展到更大的堆，
+// 这主要需要额外的虚拟地址空间。选择管理大型数组也意味着运行时可能会保留大量的虚拟地址空间。
+
 package runtime
 
 import (
@@ -60,6 +91,12 @@ const (
 	logPallocChunkPages = 9
 	logPallocChunkBytes = logPallocChunkPages + pageShift
 
+	// 位图块的大小，即一次要考虑的位数（即页面数）。
+	// pallocChunkPages 表示每个块包含的页面数，为 2^9 = 512 页
+	// pallocChunkBytes 表示每个块的字节大小，为 512 页 * 8KB = 4MB
+	// logPallocChunkPages 是 pallocChunkPages 的以 2 为底的对数，值为 9
+	// logPallocChunkBytes 是 pallocChunkBytes 的以 2 为底的对数，值为 9 + 13 = 22
+
 	// The number of radix bits for each level.
 	//
 	// The value of 3 is chosen such that the block of summaries we need to scan at
@@ -74,6 +111,19 @@ const (
 	summaryLevelBits = 3
 	summaryL0Bits    = heapAddrBits - logPallocChunkBytes - (summaryLevels-1)*summaryLevelBits
 
+	// 每一层的基数位数。
+	//
+	// 选择值 3 的原因是：我们需要在每个级别扫描的摘要块都能放入 64 字节
+	//（2^3 个摘要 * 每个摘要 8 字节），这接近许多系统的 L1 缓存行宽度。
+	// 另外，值 3 使得 4 个树级别完美地适应根级别的 21 位 pallocBits 摘要字段。
+	//
+	// 以下等式解释了各个常量之间的关系：
+	// summaryL0Bits + (summaryLevels-1)*summaryLevelBits + logPallocChunkBytes = heapAddrBits
+	//
+	// summaryLevels 是在 mpagealloc_*.go 中定义的与架构相关的值。
+	// summaryLevelBits 表示每个级别的基数位数，值为 3
+	// summaryL0Bits 表示根级别的位数，通过上述等式计算得出
+
 	// pallocChunksL2Bits is the number of bits of the chunk index number
 	// covered by the second level of the chunks map.
 	//
@@ -81,6 +131,12 @@ const (
 	// there should this change.
 	pallocChunksL2Bits  = heapAddrBits - logPallocChunkBytes - pallocChunksL1Bits
 	pallocChunksL1Shift = pallocChunksL2Bits
+
+	// pallocChunksL2Bits 是块索引号中被 chunks 映射的第二层覆盖的位数。
+	//
+	// 有关更多详细信息，请参见 (*pageAlloc).chunks。如果这里发生变化，请更新那里的文档。
+	// pallocChunksL2Bits 通过从总地址位数中减去块字节数的对数和第一层位数计算得出
+	// pallocChunksL1Shift 用于计算第一层索引，值等于 pallocChunksL2Bits
 )
 
 // maxSearchAddr returns the maximum searchAddr value, which indicates
@@ -92,6 +148,14 @@ const (
 // It's a function (rather than a variable) because it needs to be
 // usable before package runtime's dynamic initialization is complete.
 // See #51913 for details.
+//
+// maxSearchAddr 返回 searchAddr 的最大值，该值表示堆中没有可用空间。
+//
+// 这个函数的存在只是为了明确这是页面分配器搜索空间的最大地址。
+// 有关详细信息，请参见 maxOffAddr。
+//
+// 它被实现为一个函数（而不是变量）是因为它需要在 runtime 包的动态初始化完成之前就能使用。
+// 有关详细信息，请参见 #51913。
 func maxSearchAddr() offAddr { return maxOffAddr }
 
 // Global chunk index.
@@ -199,6 +263,21 @@ type pageAlloc struct {
 	//
 	// We may still get segmentation faults < len since some of that
 	// memory may not be committed yet.
+	// 摘要的基数树。
+	//
+	// 每个切片的 cap 表示整个内存预留。
+	// 每个切片的 len 反映了分配器在该级别已知的最大映射堆地址。
+	//
+	// 每个摘要级别的后备存储都在 init 中预留，
+	// 并且可能在 grow 中提交（小地址空间可能在 init 中提交所有内存）。
+	//
+	// 保持 len <= cap 的目的是在切片的上端强制执行边界检查，
+	// 这样我们就能得到一个更友好的越界错误，而不是未知的运行时段错误。
+	//
+	// 要遍历摘要级别，使用 inUse 来确定当前可用的范围。
+	// 否则可能会尝试访问仅预留的内存，这可能导致硬故障。
+	//
+	// 由于某些内存可能尚未提交，我们仍然可能获得 < len 的段错误。
 	summary [summaryLevels][]pallocSum
 
 	// chunks is a slice of bitmap chunks.
@@ -236,6 +315,34 @@ type pageAlloc struct {
 	// TODO(mknyszek): Consider changing the definition of the bitmap
 	// such that 1 means free and 0 means in-use so that summaries and
 	// the bitmaps align better on zero-values.
+	//
+	// chunks 是位图块的切片。
+	//
+	// 在大多数64位平台上，如果展平的话，chunks的总大小相当大（O(GiB)或更多），
+	// 因此我们使用类似于mheap中arena索引的两级稀疏数组方法，而不是创建一个大的映射
+	//（这在某些平台上会有问题，即使使用PROT_NONE）。
+	//
+	// 要找到包含内存地址`a`的块，执行：
+	//   chunkOf(chunkIndex(a))
+	//
+	// 下表描述了运行时支持的各种heapAddrBits的chunks配置。
+	//
+	// heapAddrBits | L1位数 | L2位数 | L2条目大小
+	// ------------------------------------------------
+	// 32           | 0      | 10     | 128 KiB
+	// 33 (iOS)     | 0      | 11     | 256 KiB
+	// 48           | 13     | 13     | 1 MiB
+	//
+	// 在32位系统上没有理由使用chunks的L1部分，因为地址空间较小，所以L2也较小。
+	// 对于具有48位地址空间的平台，我们选择L1使得L2大小为1 MiB，
+	// 这是在低粒度和不过度影响BSS之间的良好平衡（注意L1直接存储在pageAlloc中）。
+	//
+	// 要遍历位图，使用inUse来确定当前可用的范围。否则可能会遍历未使用的范围。
+	//
+	// 由mheapLock保护。
+	//
+	// TODO(mknyszek): 考虑更改位图的定义，使1表示空闲，0表示使用中，
+	// 这样摘要和位图在零值上能更好地对齐。
 	chunks [1 << pallocChunksL1Bits]*[1 << pallocChunksL2Bits]pallocData
 
 	// The address to start an allocation search with. It must never
@@ -246,12 +353,21 @@ type pageAlloc struct {
 	//
 	// We guarantee that all valid heap addresses below this value
 	// are allocated and not worth searching.
+	//
+	// 用于开始分配搜索的地址。它绝不能指向不在 inUse 范围内的任何内存，
+	// 即 inUse.contains(searchAddr.addr()) 必须始终为 true。
+	// 这个规则的一个例外是它可以取 maxOffAddr 的值来表示堆已耗尽。
+	//
+	// 我们保证所有低于此值的有效堆地址都已分配，不值得搜索。
 	searchAddr offAddr
 
 	// start and end represent the chunk indices
 	// which pageAlloc knows about. It assumes
 	// chunks in the range [start, end) are
 	// currently ready to use.
+	//
+	// start 和 end 表示 pageAlloc 已知的块索引。
+	// 它假设范围 [start, end) 内的块当前可以使用。
 	start, end chunkIdx
 
 	// inUse is a slice of ranges of address space which are
@@ -263,42 +379,62 @@ type pageAlloc struct {
 	// cases this should have just 1 element.
 	//
 	// All access is protected by the mheapLock.
+	//
+	// inUse 是地址空间范围的切片，页面分配器知道这些范围当前正在使用中
+	//（传递给 grow 函数）。
+	//
+	// 在这些情况下，我们更关心拥有连续的堆，并采取额外的措施来确保这一点，
+	// 因此在几乎所有情况下，这应该只有一个元素。
+	//
+	// 所有访问都由 mheapLock 保护。
 	inUse addrRanges
 
 	// scav stores the scavenger state.
+	// scav 存储了内存回收器的状态
 	scav struct {
 		// index is an efficient index of chunks that have pages available to
 		// scavenge.
+		// index 是一个高效的索引，用于标记哪些内存块有可回收的页面
 		index scavengeIndex
 
 		// releasedBg is the amount of memory released in the background this
 		// scavenge cycle.
+		// releasedBg 是在当前回收周期中通过后台回收释放的内存量
 		releasedBg atomic.Uintptr
 
 		// releasedEager is the amount of memory released eagerly this scavenge
 		// cycle.
+		// releasedEager 是在当前回收周期中通过主动回收释放的内存量
 		releasedEager atomic.Uintptr
 	}
 
 	// mheap_.lock. This level of indirection makes it possible
 	// to test pageAlloc independently of the runtime allocator.
+	// mheap_.lock。这种间接引用使得可以独立于运行时分配器测试 pageAlloc。
 	mheapLock *mutex
 
 	// sysStat is the runtime memstat to update when new system
 	// memory is committed by the pageAlloc for allocation metadata.
+	// sysStat 是运行时内存统计，当 pageAlloc 为分配元数据提交新的系统内存时需要更新它。
 	sysStat *sysMemStat
 
 	// summaryMappedReady is the number of bytes mapped in the Ready state
 	// in the summary structure. Used only for testing currently.
 	//
 	// Protected by mheapLock.
+	// summaryMappedReady 是摘要结构中处于 Ready 状态的已映射字节数。
+	// 目前仅用于测试。
+	//
+	// 由 mheapLock 保护。
 	summaryMappedReady uintptr
 
 	// chunkHugePages indicates whether page bitmap chunks should be backed
 	// by huge pages.
+	// chunkHugePages 指示页面位图块是否应该由大页支持。
 	chunkHugePages bool
 
 	// Whether or not this struct is being used in tests.
+	// 指示此结构体是否在测试中使用。
 	test bool
 }
 
@@ -987,6 +1123,9 @@ const (
 // a bitmap and are thus counts, each of which may have a maximum value of
 // 2^21 - 1, or all three may be equal to 2^21. The latter case is represented
 // by just setting the 64th bit.
+// pallocSum 是一个压缩的摘要类型，它将三个数字：start、max 和 end 打包到一个 8 字节的值中。
+// 这些值中的每一个都是位图的摘要，因此都是计数值，每个值可能的最大值为 2^21 - 1，
+// 或者所有三个值都可能等于 2^21。后一种情况通过设置第 64 位来表示。
 type pallocSum uint64
 
 // packPallocSum takes a start, max, and end value and produces a pallocSum.

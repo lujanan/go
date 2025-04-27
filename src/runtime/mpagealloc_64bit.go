@@ -12,9 +12,11 @@ import (
 
 const (
 	// The number of levels in the radix tree.
+	// 基数树中的层数。
 	summaryLevels = 5
 
 	// Constants for testing.
+	// 用于测试的常量。
 	pageAlloc32Bit = 0
 	pageAlloc64Bit = 1
 
@@ -23,6 +25,10 @@ const (
 	//
 	// See (*pageAlloc).chunks for more details. Update the documentation
 	// there should this number change.
+	// 表示chunks映射的L1层所有索引所需的位数。
+	//
+	// 有关更多详细信息，请参见(*pageAlloc).chunks。如果这个数字发生变化，
+	// 应该更新那里的文档。
 	pallocChunksL1Bits = 13
 )
 
