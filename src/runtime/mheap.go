@@ -289,24 +289,24 @@ type mheap struct {
 		pad      [(cpu.CacheLinePadSize - unsafe.Sizeof(mcentral{})%cpu.CacheLinePadSize) % cpu.CacheLinePadSize]byte
 	}
 
-	spanalloc fixalloc // allocator for span*
 	// spanalloc 是用于分配 span* 的固定大小分配器
-	cachealloc fixalloc // allocator for mcache*
+	spanalloc fixalloc // allocator for span*
 	// cachealloc 是用于分配 mcache* 的固定大小分配器
-	specialfinalizeralloc fixalloc // allocator for specialfinalizer*
+	cachealloc fixalloc // allocator for mcache*
 	// specialfinalizeralloc 是用于分配 specialfinalizer* 的固定大小分配器
-	specialprofilealloc fixalloc // allocator for specialprofile*
+	specialfinalizeralloc fixalloc // allocator for specialfinalizer*
 	// specialprofilealloc 是用于分配 specialprofile* 的固定大小分配器
-	specialReachableAlloc fixalloc // allocator for specialReachable
+	specialprofilealloc fixalloc // allocator for specialprofile*
 	// specialReachableAlloc 是用于分配 specialReachable 的固定大小分配器
-	specialPinCounterAlloc fixalloc // allocator for specialPinCounter
+	specialReachableAlloc fixalloc // allocator for specialReachable
 	// specialPinCounterAlloc 是用于分配 specialPinCounter 的固定大小分配器
-	specialWeakHandleAlloc fixalloc // allocator for specialWeakHandle
+	specialPinCounterAlloc fixalloc // allocator for specialPinCounter
 	// specialWeakHandleAlloc 是用于分配 specialWeakHandle 的固定大小分配器
-	speciallock mutex // lock for special record allocators.
+	specialWeakHandleAlloc fixalloc // allocator for specialWeakHandle
 	// speciallock 是用于保护特殊记录分配器的互斥锁
-	arenaHintAlloc fixalloc // allocator for arenaHints
+	speciallock mutex // lock for special record allocators.
 	// arenaHintAlloc 是用于分配 arenaHints 的固定大小分配器
+	arenaHintAlloc fixalloc // allocator for arenaHints
 
 	// User arena state.
 	//
