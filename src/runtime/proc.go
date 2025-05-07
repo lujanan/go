@@ -4630,10 +4630,16 @@ func park_m(gp *g) {
 	schedule()
 }
 
+// goschedImpl是调度器内部使用的函数，用于将goroutine从运行状态切换到可运行状态
+// 它处理跟踪事件的记录，并确保状态转换的安全性
 func goschedImpl(gp *g, preempted bool) {
+	// 获取跟踪器实例
 	trace := traceAcquire()
+	// 读取goroutine的状态
 	status := readgstatus(gp)
+	// 检查goroutine是否处于运行状态(排除扫描标记)
 	if status&^_Gscan != _Grunning {
+		// 如果状态不正确，打印goroutine状态并抛出异常
 		dumpgstatus(gp)
 		throw("bad g status")
 	}
@@ -4641,26 +4647,38 @@ func goschedImpl(gp *g, preempted bool) {
 		// Trace the event before the transition. It may take a
 		// stack trace, but we won't own the stack after the
 		// transition anymore.
+		// 在状态转换前记录跟踪事件。这可能需要获取栈跟踪，
+		// 但在状态转换后我们将不再拥有该栈。
 		if preempted {
+			// 如果是被抢占，记录抢占事件
 			trace.GoPreempt()
 		} else {
+			// 否则记录调度事件
 			trace.GoSched()
 		}
 	}
+	// 将goroutine状态从运行中(_Grunning)改为可运行(_Grunnable)
 	casgstatus(gp, _Grunning, _Grunnable)
 	if trace.ok() {
+		// 释放跟踪器
 		traceRelease(trace)
 	}
 
+	// 解除goroutine与当前M的绑定
 	dropg()
+	// 获取调度器锁
 	lock(&sched.lock)
+	// 将goroutine放入全局运行队列
 	globrunqput(gp)
+	// 释放调度器锁
 	unlock(&sched.lock)
 
+	// 如果主goroutine已启动，尝试唤醒一个P来运行goroutine
 	if mainStarted {
 		wakep()
 	}
 
+	// 重新调度，寻找下一个要运行的goroutine
 	schedule()
 }
 
@@ -6090,6 +6108,7 @@ func setcpuprofilerate(hz int32) {
 
 // init initializes pp, which may be a freshly allocated p or a
 // previously destroyed p, and transitions it to status _Pgcstop.
+// init初始化pp，pp可能是一个新分配的p或者之前被销毁的p，并将其状态转换为_Pgcstop
 func (pp *p) init(id int32) {
 	pp.id = id
 	pp.status = _Pgcstop
@@ -6103,6 +6122,7 @@ func (pp *p) init(id int32) {
 			}
 			// Use the bootstrap mcache0. Only one P will get
 			// mcache0: the one with ID 0.
+			// 使用引导阶段的mcache0。只有一个P会获得mcache0：ID为0的那个P
 			pp.mcache = mcache0
 		} else {
 			pp.mcache = allocmcache()
@@ -6120,9 +6140,12 @@ func (pp *p) init(id int32) {
 
 	// This P may get timers when it starts running. Set the mask here
 	// since the P may not go through pidleget (notably P 0 on startup).
+	// 当P开始运行时可能会获得定时器。在这里设置掩码，
+	// 因为P可能不会经过pidleget（特别是启动时的P 0）
 	timerpMask.set(id)
 	// Similarly, we may not go through pidleget before this P starts
 	// running if it is P 0 on startup.
+	// 类似地，如果这是启动时的P 0，在P开始运行之前可能不会经过pidleget
 	idlepMask.clear(id)
 }
 
@@ -6201,57 +6224,81 @@ func (pp *p) destroy() {
 }
 
 // Change number of processors.
+// 更改处理器数量
 //
 // sched.lock must be held, and the world must be stopped.
+// 必须持有sched.lock锁，且世界必须处于停止状态
 //
 // gcworkbufs must not be being modified by either the GC or the write barrier
 // code, so the GC must not be running if the number of Ps actually changes.
+// gcworkbufs不能被GC或写屏障代码修改，因此如果P的数量实际发生变化，GC不能运行
 //
 // Returns list of Ps with local work, they need to be scheduled by the caller.
+// 返回具有本地工作的P列表，它们需要由调用者调度
 func procresize(nprocs int32) *p {
+	// 确保持有调度器锁
 	assertLockHeld(&sched.lock)
+	// 确保世界处于停止状态
 	assertWorldStopped()
 
+	// 获取当前的处理器数量
 	old := gomaxprocs
+	// 检查参数有效性
 	if old < 0 || nprocs <= 0 {
 		throw("procresize: invalid arg")
 	}
+	// 获取跟踪器实例
 	trace := traceAcquire()
 	if trace.ok() {
+		// 记录处理器数量变化事件
 		trace.Gomaxprocs(nprocs)
 		traceRelease(trace)
 	}
 
 	// update statistics
+	// 更新统计信息
 	now := nanotime()
 	if sched.procresizetime != 0 {
+		// 如果之前有记录处理器调整时间，计算总运行时间
+		// 总时间 = 旧处理器数量 * (当前时间 - 上次调整时间)
 		sched.totaltime += int64(old) * (now - sched.procresizetime)
 	}
+	// 更新处理器调整时间为当前时间
 	sched.procresizetime = now
 
+	// 计算需要的掩码位数
+	// 每个uint32可以表示32个处理器，所以需要(nprocs + 31) / 32个uint32
 	maskWords := (nprocs + 31) / 32
 
 	// Grow allp if necessary.
+	// 如果需要，扩展allp数组
 	if nprocs > int32(len(allp)) {
 		// Synchronize with retake, which could be running
 		// concurrently since it doesn't run on a P.
+		// 与retake同步，因为它不在P上运行，所以可能并发执行
 		lock(&allpLock)
 		if nprocs <= int32(cap(allp)) {
+			// 如果新处理器数量不超过allp的容量，直接调整长度
 			allp = allp[:nprocs]
 		} else {
+			// 如果新处理器数量超过allp的容量，需要创建新的切片
 			nallp := make([]*p, nprocs)
 			// Copy everything up to allp's cap so we
 			// never lose old allocated Ps.
+			// 复制allp中所有已分配的P，确保不会丢失已分配的P
 			copy(nallp, allp[:cap(allp)])
 			allp = nallp
 		}
 
 		if maskWords <= int32(cap(idlepMask)) {
+			// 如果新的掩码位数不超过现有掩码的容量，直接调整长度
 			idlepMask = idlepMask[:maskWords]
 			timerpMask = timerpMask[:maskWords]
 		} else {
+			// 如果新的掩码位数超过现有掩码的容量，需要创建新的掩码数组
 			nidlepMask := make([]uint32, maskWords)
 			// No need to copy beyond len, old Ps are irrelevant.
+			// 不需要复制超过len的部分，旧的P已经无关紧要
 			copy(nidlepMask, idlepMask)
 			idlepMask = nidlepMask
 
@@ -6263,32 +6310,43 @@ func procresize(nprocs int32) *p {
 	}
 
 	// initialize new P's
+	// 初始化新的处理器(P)
 	for i := old; i < nprocs; i++ {
 		pp := allp[i]
 		if pp == nil {
+			// 如果该位置的P为空，则创建一个新的P
 			pp = new(p)
 		}
+		// 初始化P，设置其ID为i
 		pp.init(i)
+		// 使用原子操作将新创建的P存储到allp数组中
+		// 这样可以确保并发安全
 		atomicstorep(unsafe.Pointer(&allp[i]), unsafe.Pointer(pp))
 	}
 
 	gp := getg()
 	if gp.m.p != 0 && gp.m.p.ptr().id < nprocs {
 		// continue to use the current P
+		// 继续使用当前的P
 		gp.m.p.ptr().status = _Prunning
 		gp.m.p.ptr().mcache.prepareForSweep()
 	} else {
 		// release the current P and acquire allp[0].
+		// 释放当前的P并获取allp[0]
 		//
 		// We must do this before destroying our current P
 		// because p.destroy itself has write barriers, so we
 		// need to do that from a valid P.
+		// 我们必须在销毁当前P之前执行此操作，
+		// 因为p.destroy本身包含写屏障，所以我们需要在一个有效的P上执行此操作
 		if gp.m.p != 0 {
 			trace := traceAcquire()
 			if trace.ok() {
 				// Pretend that we were descheduled
 				// and then scheduled again to keep
 				// the trace consistent.
+				// 假装我们被取消调度然后重新调度，
+				// 以保持跟踪的一致性
 				trace.GoSched()
 				trace.ProcStop(gp.m.p.ptr())
 				traceRelease(trace)
@@ -6308,46 +6366,62 @@ func procresize(nprocs int32) *p {
 	}
 
 	// g.m.p is now set, so we no longer need mcache0 for bootstrapping.
+	// g.m.p现在已经设置好了，所以我们不再需要mcache0用于引导过程
 	mcache0 = nil
 
 	// release resources from unused P's
+	// 释放未使用的P的资源
 	for i := nprocs; i < old; i++ {
 		pp := allp[i]
 		pp.destroy()
 		// can't free P itself because it can be referenced by an M in syscall
+		// 不能释放P本身，因为它可能被处于系统调用中的M引用
 	}
 
 	// Trim allp.
+	// 裁剪allp数组
 	if int32(len(allp)) != nprocs {
 		lock(&allpLock)
-		allp = allp[:nprocs]
-		idlepMask = idlepMask[:maskWords]
-		timerpMask = timerpMask[:maskWords]
+		allp = allp[:nprocs]                // 将allp数组裁剪到nprocs长度
+		idlepMask = idlepMask[:maskWords]   // 裁剪空闲P的掩码
+		timerpMask = timerpMask[:maskWords] // 裁剪定时器P的掩码
 		unlock(&allpLock)
 	}
 
+	// 创建一个指向可运行P的指针
 	var runnablePs *p
+	// 从后向前遍历所有P
 	for i := nprocs - 1; i >= 0; i-- {
 		pp := allp[i]
+		// 跳过当前M正在使用的P
 		if gp.m.p.ptr() == pp {
 			continue
 		}
+		// 将P的状态设置为空闲
 		pp.status = _Pidle
 		if runqempty(pp) {
+			// 如果P的运行队列为空，将其放入空闲P列表
 			pidleput(pp, now)
 		} else {
+			// 如果P的运行队列不为空，为其分配一个M
 			pp.m.set(mget())
+			// 将P链接到可运行P链表中
 			pp.link.set(runnablePs)
 			runnablePs = pp
 		}
 	}
+	// 重置工作窃取顺序
 	stealOrder.reset(uint32(nprocs))
+	// 创建一个指向gomaxprocs的指针，用于编译器检查gomaxprocs是否为int32类型
 	var int32p *int32 = &gomaxprocs // make compiler check that gomaxprocs is an int32
+	// 原子地更新gomaxprocs的值
 	atomic.Store((*uint32)(unsafe.Pointer(int32p)), uint32(nprocs))
 	if old != nprocs {
 		// Notify the limiter that the amount of procs has changed.
+		// 通知限制器处理器数量已发生变化
 		gcCPULimiter.resetCapacity(now, nprocs)
 	}
+	// 返回可运行的P链表
 	return runnablePs
 }
 
@@ -7115,23 +7189,40 @@ func (p pMask) clear(id int32) {
 //
 // May run during STW, so write barriers are not allowed.
 //
+// pidleput将P放入空闲P列表中。now参数必须是最近一次调用nanotime()的结果或零。
+// 如果now为零，则返回当前时间，否则返回now。
+//
+// 这个函数会释放对p的所有权。一旦sched.lock被释放，继续使用p就不再安全。
+//
+// 调用此函数时必须持有sched.lock锁。
+//
+// 此函数可能在STW(Stop The World)期间运行，因此不允许写屏障。
+//
 //go:nowritebarrierrec
 func pidleput(pp *p, now int64) int64 {
+	// 确保持有调度器锁
 	assertLockHeld(&sched.lock)
 
+	// 检查P的运行队列是否为空
 	if !runqempty(pp) {
 		throw("pidleput: P has non-empty run queue")
 	}
+	// 如果now为0，获取当前时间
 	if now == 0 {
 		now = nanotime()
 	}
+	// 如果P没有定时器，清除其定时器掩码
 	if pp.timers.len.Load() == 0 {
 		timerpMask.clear(pp.id)
 	}
+	// 设置P的空闲掩码
 	idlepMask.set(pp.id)
+	// 将P链接到空闲P链表
 	pp.link = sched.pidle
 	sched.pidle.set(pp)
+	// 增加空闲P计数
 	sched.npidle.Add(1)
+	// 启动P的空闲限制器事件
 	if !pp.limiterEvent.start(limiterEventIdle, now) {
 		throw("must be able to track idle limiter event")
 	}
@@ -7190,16 +7281,28 @@ func pidlegetSpinning(now int64) (*p, int64) {
 
 // runqempty reports whether pp has no Gs on its local run queue.
 // It never returns true spuriously.
+// runqempty 检查本地运行队列是否为空
+// 它永远不会错误地返回true
 func runqempty(pp *p) bool {
 	// Defend against a race where 1) pp has G1 in runqnext but runqhead == runqtail,
 	// 2) runqput on pp kicks G1 to the runq, 3) runqget on pp empties runqnext.
 	// Simply observing that runqhead == runqtail and then observing that runqnext == nil
 	// does not mean the queue is empty.
+	// 防止以下竞态条件:
+	// 1) pp的runqnext中有G1但runqhead等于runqtail
+	// 2) pp上的runqput将G1踢到runq中
+	// 3) pp上的runqget清空runqnext
+	// 简单地观察到runqhead等于runqtail并且runqnext为nil并不意味着队列为空
 	for {
+		// 原子地加载队列头部位置
 		head := atomic.Load(&pp.runqhead)
+		// 原子地加载队列尾部位置
 		tail := atomic.Load(&pp.runqtail)
+		// 原子地加载runnext指针
 		runnext := atomic.Loaduintptr((*uintptr)(unsafe.Pointer(&pp.runnext)))
+		// 再次检查尾部位置是否发生变化
 		if tail == atomic.Load(&pp.runqtail) {
+			// 只有当队列头部等于尾部且runnext为空时，才认为队列为空
 			return head == tail && runnext == 0
 		}
 	}

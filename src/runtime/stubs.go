@@ -28,6 +28,8 @@ func add(p unsafe.Pointer, x uintptr) unsafe.Pointer {
 // getg returns the pointer to the current g.
 // The compiler rewrites calls to this function into instructions
 // that fetch the g directly (from TLS or from the dedicated register).
+// getg返回当前g的指针
+// 编译器会将对此函数的调用重写为直接从TLS(线程本地存储)或专用寄存器获取g的指令
 func getg() *g
 
 // mcall switches from the g to the g0 stack and invokes fn(g),
@@ -44,6 +46,20 @@ func getg() *g
 // This must NOT be go:noescape: if fn is a stack-allocated closure,
 // fn puts g on a run queue, and g executes before fn returns, the
 // closure will be invalidated while it is still executing.
+
+// mcall从g切换到g0栈并调用fn(g)，
+// 其中g是发起调用的goroutine。
+// mcall将g当前的PC/SP保存在g->sched中，以便后续可以恢复。
+// 由fn负责安排后续的执行，通常是通过将g记录在数据结构中，
+// 导致某些操作稍后调用ready(g)。
+// 当g被重新调度时，mcall稍后会返回到原始goroutine g。
+// fn绝对不能返回；通常它通过调用schedule结束，让m运行其他goroutine。
+//
+// mcall只能从g栈调用（不能从g0或gsignal栈调用）。
+//
+// 这里绝对不能使用go:noescape：如果fn是一个栈分配的闭包，
+// fn将g放入运行队列，而g在fn返回之前就执行了，
+// 那么闭包在仍在执行时就会失效。
 func mcall(fn func(*g))
 
 // systemstack runs fn on a system stack.
@@ -62,6 +78,22 @@ func mcall(fn func(*g))
 //		x = bigcall(y)
 //	})
 //	... use x ...
+//
+// systemstack在系统栈上运行fn函数。
+// 如果systemstack是从每个OS线程(g0)栈调用的，或者
+// 如果systemstack是从信号处理(gsignal)栈调用的，
+// systemstack会直接调用fn并返回。
+// 否则，systemstack是从普通goroutine的有限栈调用的。
+// 在这种情况下，systemstack会切换到每个OS线程的栈，
+// 调用fn，然后切换回来。
+// 通常使用函数字面量作为参数，以便与调用systemstack
+// 周围的代码共享输入和输出：
+//
+//	... 设置y ...
+//	systemstack(func() {
+//		x = bigcall(y)
+//	})
+//	... 使用x ...
 //
 //go:noescape
 func systemstack(fn func())
@@ -211,12 +243,32 @@ func noEscapePtr[T any](p *T) *T {
 //
 // When fn is nil (frame is saved g), call dropm instead,
 // this is used when the C thread is exiting.
+
+// 并非所有的cgocallback帧都是真正的cgocallback调用，
+// 因此并非所有帧都有这些参数。将它们标记为uintptr类型，
+// 这样当参数不存在时GC就不会错误地解释内存。
+// cgocallback不是从Go代码调用的，只能从crosscall2调用。
+// 它随后会调用cgocallbackg，在那里我们会找到指针声明的参数。
+//
+// 当fn为nil时（frame是保存的g），改为调用dropm，
+// 这种情况用于C线程退出时。
 func cgocallback(fn, frame, ctxt uintptr)
 
+// gogo用于执行gobuf中的函数。
+// 它将gobuf中的参数复制到当前goroutine的栈中，
+// 然后执行gobuf中的函数。
 func gogo(buf *gobuf)
 
+// asminit是汇编初始化函数。
+// 它设置g0的参数，并调用runtime·rt0_go。
 func asminit()
+
+// setg设置当前g的指针。
+// 它将gg的值存储到当前g的指针中。
 func setg(gg *g)
+
+// breakpoint是一个断点函数。
+// 它是一个空函数，用于在调试时设置断点。
 func breakpoint()
 
 // reflectcall calls fn with arguments described by stackArgs, stackArgsSize,
@@ -290,6 +342,15 @@ type neverCallThisFunction struct{}
 // gentraceback assumes that goexit terminates the stack. A direct
 // call on the stack will cause gentraceback to stop walking the stack
 // prematurely and if there is leftover state it may panic.
+
+// goexit是每个goroutine调用栈顶部的返回存根
+// 每个goroutine栈的构造方式就像goexit调用了goroutine的入口点函数一样
+// 这样当入口点函数返回时，它会返回到goexit
+// 然后goexit会调用goexit1来执行实际的退出操作
+//
+// 这个函数绝对不能直接调用。应该调用goexit1代替
+// gentraceback假设goexit会终止栈。在栈上直接调用会导致gentraceback过早停止遍历栈
+// 如果还有剩余状态可能会导致panic
 func goexit(neverCallThisFunction)
 
 // publicationBarrier performs a store/store barrier (a "publication"
