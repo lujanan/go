@@ -587,14 +587,14 @@ type sudog struct {
 	// （如果我们想要过度聪明，我们可以在列表的第二个条目中存储高 16 位。）
 	waiters uint16
 
-	parent *sudog // semaRoot binary tree
 	// 父节点，用于 semaRoot 二叉树
-	waitlink *sudog // g.waiting list or semaRoot
+	parent *sudog // semaRoot binary tree
 	// 等待链接，用于 g.waiting 列表或 semaRoot
-	waittail *sudog // semaRoot
+	waitlink *sudog // g.waiting list or semaRoot
 	// 等待队列尾部，用于 semaRoot
-	c *hchan // channel
+	waittail *sudog // semaRoot
 	// 关联的 channel
+	c *hchan // channel
 }
 
 type libcall struct {
