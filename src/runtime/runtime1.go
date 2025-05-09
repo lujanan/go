@@ -599,19 +599,32 @@ func timediv(v int64, div int32, rem *int32) int32 {
 
 // Helpers for Go. Must be NOSPLIT, must only call NOSPLIT functions, and must not block.
 
+// acquirem acquires the current m (machine) and increments its lock count.
+// It is used to prevent preemption of the current goroutine.
+// acquirem获取当前的m(机器)并增加其锁计数。
+// 它用于防止当前goroutine被抢占。
+//
 //go:nosplit
 func acquirem() *m {
-	gp := getg()
-	gp.m.locks++
-	return gp.m
+	gp := getg() // 获取当前goroutine
+	gp.m.locks++ // 增加m的锁计数
+	return gp.m  // 返回当前的m
 }
 
+// releasem releases the m (machine) by decrementing its lock count.
+// If the lock count becomes 0 and the goroutine was marked for preemption,
+// it restores the preemption request by setting stackguard0 to stackPreempt.
+// releasem通过减少锁计数来释放m(机器)。
+// 如果锁计数变为0且goroutine被标记为需要抢占，
+// 则通过将stackguard0设置为stackPreempt来恢复抢占请求。
+//
 //go:nosplit
 func releasem(mp *m) {
-	gp := getg()
-	mp.locks--
+	gp := getg() // 获取当前goroutine
+	mp.locks--   // 减少m的锁计数
 	if mp.locks == 0 && gp.preempt {
 		// restore the preemption request in case we've cleared it in newstack
+		// 如果我们在newstack中清除了抢占请求，则恢复它
 		gp.stackguard0 = stackPreempt
 	}
 }

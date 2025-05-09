@@ -64,18 +64,70 @@ The linkers explore all possible call traces involving non-splitting
 functions to make sure that this limit cannot be violated.
 */
 
+/*
+栈布局参数说明。
+这些参数同时被运行时(通过6c编译)和链接器(通过gcc编译)使用。
+
+每个goroutine的g->stackguard被设置为指向栈底上方StackGuard字节处。
+每个函数都会将其栈指针与g->stackguard进行比较以检查是否溢出。
+为了减少具有小帧的函数的检查序列中的一条指令，
+允许栈在栈保护区域下方延伸StackSmall字节。
+具有大帧的函数不进行这种检查，而是直接调用morestack。
+以下是检查序列(以amd64为例，其他架构类似):
+
+	guard = g->stackguard
+	frame = 函数的栈帧大小
+	argsize = 函数参数的大小(调用+返回)
+
+	栈帧大小 <= StackSmall:
+		CMPQ guard, SP
+		JHI 3(PC)
+		MOVQ m->morearg, $(argsize << 32)
+		CALL morestack(SB)
+
+	栈帧大小 > StackSmall 但 < StackBig:
+		LEAQ (frame-StackSmall)(SP), R0
+		CMPQ guard, R0
+		JHI 3(PC)
+		MOVQ m->morearg, $(argsize << 32)
+		CALL morestack(SB)
+
+	栈帧大小 >= StackBig:
+		MOVQ m->morearg, $((argsize << 32) | frame)
+		CALL morestack(SB)
+
+栈底部的StackGuard - StackSmall字节很重要：
+必须要有足够的空间来执行那些拒绝检查栈溢出的函数，
+这些函数要么需要与实际调用者的帧相邻(deferproc)，
+要么需要处理即将发生的栈溢出(morestack)。
+
+例如，deferproc可能会调用malloc，malloc会执行上述检查之一
+(不分配完整的帧)，这可能会触发对morestack的调用。
+这个序列需要适合栈底部的区域。在amd64上，
+morestack的帧是40字节，deferproc的帧是56字节。
+这完全适合栈底部的StackGuard - StackSmall字节。
+链接器会探索所有涉及非分割函数的可能调用轨迹，
+以确保不会违反这个限制。
+*/
+
 const (
 	// stackSystem is a number of additional bytes to add
 	// to each stack below the usual guard area for OS-specific
 	// purposes like signal handling. Used on Windows, Plan 9,
 	// and iOS because they do not use a separate stack.
+	// stackSystem是为每个栈在常规保护区域下方添加的额外字节数，
+	// 用于操作系统特定的目的，如信号处理。
+	// 在Windows、Plan 9和iOS上使用，因为它们不使用单独的栈。
 	stackSystem = goos.IsWindows*4096 + goos.IsPlan9*512 + goos.IsIos*goarch.IsArm64*1024
 
 	// The minimum size of stack used by Go code
+	// Go代码使用的最小栈大小
 	stackMin = 2048
 
 	// The minimum stack size to allocate.
 	// The hackery here rounds fixedStack0 up to a power of 2.
+	// 要分配的最小栈大小。
+	// 这里的技巧是将fixedStack0向上取整到2的幂次方。
 	fixedStack0 = stackMin + stackSystem
 	fixedStack1 = fixedStack0 - 1
 	fixedStack2 = fixedStack1 | (fixedStack1 >> 1)
@@ -88,6 +140,8 @@ const (
 	// stackNosplit is the maximum number of bytes that a chain of NOSPLIT
 	// functions can use.
 	// This arithmetic must match that in cmd/internal/objabi/stack.go:StackNosplit.
+	// stackNosplit是一系列NOSPLIT函数可以使用的最大字节数。
+	// 这个计算必须与cmd/internal/objabi/stack.go:StackNosplit中的计算相匹配。
 	stackNosplit = abi.StackNosplitBase * sys.StackGuardMultiplier
 
 	// The stack guard is a pointer this many bytes above the
@@ -96,6 +150,11 @@ const (
 	// The guard leaves enough room for a stackNosplit chain of NOSPLIT calls
 	// plus one stackSmall frame plus stackSystem bytes for the OS.
 	// This arithmetic must match that in cmd/internal/objabi/stack.go:StackLimit.
+	// 栈保护是一个指针，位于栈底部上方这么多字节处。
+	//
+	// 保护区域为一系列NOSPLIT调用、一个stackSmall帧以及操作系统的stackSystem字节
+	// 留出了足够的空间。
+	// 这个计算必须与cmd/internal/objabi/stack.go:StackLimit中的计算相匹配。
 	stackGuard = stackNosplit + stackSystem + abi.StackSmall
 )
 
@@ -119,25 +178,36 @@ var (
 )
 
 const (
+	// uintptrMask is a bit mask for the maximum value of uintptr
+	// uintptrMask是uintptr最大值的位掩码
 	uintptrMask = 1<<(8*goarch.PtrSize) - 1
 
 	// The values below can be stored to g.stackguard0 to force
 	// the next stack check to fail.
 	// These are all larger than any real SP.
+	// 下面的值可以存储在g.stackguard0中，以强制下一次栈检查失败
+	// 这些值都大于任何实际的栈指针(SP)
 
 	// Goroutine preemption request.
 	// 0xfffffade in hex.
+	// Goroutine抢占请求
+	// 十六进制值为0xfffffade
 	stackPreempt = uintptrMask & -1314
 
 	// Thread is forking. Causes a split stack check failure.
 	// 0xfffffb2e in hex.
+	// 线程正在fork。导致栈分裂检查失败
+	// 十六进制值为0xfffffb2e
 	stackFork = uintptrMask & -1234
 
 	// Force a stack movement. Used for debugging.
 	// 0xfffffeed in hex.
+	// 强制栈移动。用于调试
+	// 十六进制值为0xfffffeed
 	stackForceMove = uintptrMask & -275
 
 	// stackPoisonMin is the lowest allowed stack poison value.
+	// stackPoisonMin是允许的最小栈毒化值
 	stackPoisonMin = uintptrMask & -4096
 )
 

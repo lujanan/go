@@ -44,6 +44,16 @@ var (
 // Do not remove or change the type signature.
 // See go.dev/issue/67401.
 //
+// iscgo 由 runtime/cgo 包设置为 true
+//
+// iscgo 应该是一个内部实现细节，
+// 但是很多包通过 linkname 来访问它。
+// 一些不推荐这样做的包包括：
+//   - github.com/ebitengine/purego
+//
+// 不要删除或更改类型签名。
+// 参见 go.dev/issue/67401。
+//
 //go:linkname iscgo
 var iscgo bool
 
