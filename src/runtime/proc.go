@@ -1172,10 +1172,12 @@ func mReserveID() int64 {
 }
 
 // Pre-allocated ID may be passed as 'id', or omitted by passing -1.
+// 预分配的ID可以作为'id'传入，或者通过传入-1来省略。
 func mcommoninit(mp *m, id int64) {
 	gp := getg()
 
 	// g0 stack won't make sense for user (and is not necessary unwindable).
+	// g0栈对用户来说没有意义（而且不需要可展开）。
 	if gp != gp.m.g0 {
 		callers(1, mp.createstack[:])
 	}
@@ -1197,14 +1199,18 @@ func mcommoninit(mp *m, id int64) {
 
 	// Add to allm so garbage collector doesn't free g->m
 	// when it is just in a register or thread-local storage.
+	// 添加到allm中，这样垃圾收集器就不会在g->m仅存在于寄存器或线程本地存储中时释放它。
 	mp.alllink = allm
 
 	// NumCgoCall() and others iterate over allm w/o schedlock,
 	// so we need to publish it safely.
+	// NumCgoCall()和其他函数在没有schedlock的情况下遍历allm，
+	// 所以我们需要安全地发布它。
 	atomicstorep(unsafe.Pointer(&allm), unsafe.Pointer(mp))
 	unlock(&sched.lock)
 
 	// Allocate memory to hold a cgo traceback if the cgo call crashes.
+	// 如果cgo调用崩溃，分配内存来保存cgo回溯信息。
 	if iscgo || GOOS == "solaris" || GOOS == "illumos" || GOOS == "windows" {
 		mp.cgoCallers = new(cgoCallers)
 	}
@@ -1215,10 +1221,14 @@ func mcommoninit(mp *m, id int64) {
 // profiling. Lazy allocation would have to deal with reentrancy issues in
 // malloc and runtime locks for mLockProfile.
 // TODO(mknyszek): Implement lazy allocation if this becomes a problem.
+// mProfStackInit用于急切地初始化用于性能分析的栈跟踪缓冲区。
+// 延迟分配将不得不处理malloc和mLockProfile的运行时锁中的重入问题。
+// TODO(mknyszek): 如果这成为一个问题，实现延迟分配。
 func mProfStackInit(mp *m) {
 	if debug.profstackdepth == 0 {
 		// debug.profstack is set to 0 by the user, or we're being called from
 		// schedinit before parsedebugvars.
+		// debug.profstack由用户设置为0，或者我们在parsedebugvars之前从schedinit被调用。
 		return
 	}
 	mp.profStack = makeProfStackFP()
@@ -2508,10 +2518,20 @@ func allocm(pp *p, fn func(), id int64) *m {
 			// Wait for freeWait to indicate that freem's stack is unused.
 			// 等待freeWait表明freem的栈未被使用。
 			wait := freem.freeWait.Load()
+			// If the M is waiting to be freed (freeMWait), move it to the new list
+			// 如果M正在等待被释放（freeMWait），将其移动到新列表中
 			if wait == freeMWait {
+				// Save the next M in the free list
+				// 保存空闲列表中的下一个M
 				next := freem.freelink
+				// Link the current M to the new list
+				// 将当前M链接到新列表
 				freem.freelink = newList
+				// Update the new list head to point to the current M
+				// 更新新列表头指向当前M
 				newList = freem
+				// Move to the next M in the free list
+				// 移动到空闲列表中的下一个M
 				freem = next
 				continue
 			}
