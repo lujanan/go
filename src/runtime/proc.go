@@ -527,21 +527,27 @@ func goschedIfBusy() {
 
 // Puts the current goroutine into a waiting state and calls unlockf on the
 // system stack.
+// 将当前 goroutine 置于等待状态，并在系统栈上调用 unlockf 函数。
 //
 // If unlockf returns false, the goroutine is resumed.
+// 如果 unlockf 返回 false，则 goroutine 恢复执行。
 //
 // unlockf must not access this G's stack, as it may be moved between
 // the call to gopark and the call to unlockf.
+// unlockf 函数不能访问此 G 的栈，因为在调用 gopark 和 unlockf 之间，G 可能会被移动。
 //
 // Note that because unlockf is called after putting the G into a waiting
 // state, the G may have already been readied by the time unlockf is called
 // unless there is external synchronization preventing the G from being
 // readied. If unlockf returns false, it must guarantee that the G cannot be
 // externally readied.
+// 注意，因为 unlockf 是在将 G 置于等待状态之后调用的，所以在调用 unlockf 时，G 可能已经被唤醒（除非有外部同步阻止 G 被唤醒）。
+// 如果 unlockf 返回 false，它必须保证 G 不能被外部唤醒。
 //
 // Reason explains why the goroutine has been parked. It is displayed in stack
 // traces and heap dumps. Reasons should be unique and descriptive. Do not
 // re-use reasons, add new ones.
+// Reason 解释了 goroutine 被 park 的原因。它显示在堆栈跟踪和堆转储中。Reason 应该是唯一的和描述性的。不要重复使用 reason，添加新的 reason。
 //
 // gopark should be an internal detail,
 // but widely used packages access it using linkname.
@@ -549,32 +555,70 @@ func goschedIfBusy() {
 //   - gvisor.dev/gvisor
 //   - github.com/sagernet/gvisor
 //
+// gopark 应该是内部细节，但广泛使用的包使用 linkname 访问它。
+// 著名的耻辱成员包括：
+//   - gvisor.dev/gvisor
+//   - github.com/sagernet/gvisor
+//
 // Do not remove or change the type signature.
 // See go.dev/issue/67401.
+// 不要删除或更改类型签名。
+// 请参阅 go.dev/issue/67401。
 //
 //go:linkname gopark
 func gopark(unlockf func(*g, unsafe.Pointer) bool, lock unsafe.Pointer, reason waitReason, traceReason traceBlockReason, traceskip int) {
+	// Puts the current goroutine into a waiting state.
+	// 将当前 goroutine 置于等待状态。
+
+	// If the reason is not waitReasonSleep, check for expired timeouts.
+	// 如果原因不是 waitReasonSleep，则检查是否有超时的定时器。
 	if reason != waitReasonSleep {
 		checkTimeouts() // timeouts may expire while two goroutines keep the scheduler busy
+		// 检查超时，因为两个 goroutine 可能会使调度器繁忙，导致超时过期。
 	}
+	// Acquire the current M.
+	// 获取当前 M。
 	mp := acquirem()
+	// Get the current G.
+	// 获取当前 G。
 	gp := mp.curg
+	// Get the status of the current G.
+	// 获取当前 G 的状态。
 	status := readgstatus(gp)
+	// If the status is not _Grunning or _Gscanrunning, throw an error.
+	// 如果状态不是 _Grunning 或 _Gscanrunning，则抛出错误。
 	if status != _Grunning && status != _Gscanrunning {
 		throw("gopark: bad g status")
 	}
+	// Set the waitlock of the current M.
+	// 设置当前 M 的 waitlock。
 	mp.waitlock = lock
+	// Set the waitunlockf of the current M.
+	// 设置当前 M 的 waitunlockf。
 	mp.waitunlockf = unlockf
+	// Set the waitreason of the current G.
+	// 设置当前 G 的 waitreason。
 	gp.waitreason = reason
+	// Set the waitTraceBlockReason of the current M.
+	// 设置当前 M 的 waitTraceBlockReason。
 	mp.waitTraceBlockReason = traceReason
+	// Set the waitTraceSkip of the current M.
+	// 设置当前 M 的 waitTraceSkip。
 	mp.waitTraceSkip = traceskip
+	// Release the current M.
+	// 释放当前 M。
 	releasem(mp)
 	// can't do anything that might move the G between Ms here.
+	// 在这里不能做任何可能在 M 之间移动 G 的事情。
+	// Call park_m to park the current G.
+	// 调用 park_m 来 park 当前 G。
 	mcall(park_m)
 }
 
 // Puts the current goroutine into a waiting state and unlocks the lock.
 // The goroutine can be made runnable again by calling goready(gp).
+// 将当前 goroutine 置于等待状态并解锁互斥锁。
+// 可以通过调用 goready(gp) 使 goroutine 再次变为可运行状态。
 func goparkunlock(lock *mutex, reason waitReason, traceReason traceBlockReason, traceskip int) {
 	gopark(parkunlock_c, unsafe.Pointer(lock), reason, traceReason, traceskip)
 }
@@ -5065,6 +5109,7 @@ func parkunlock_c(gp *g, lock unsafe.Pointer) bool {
 }
 
 // park continuation on g0.
+// park_m 在g0上继续执行。
 func park_m(gp *g) {
 	mp := getg().m
 
@@ -5074,10 +5119,12 @@ func park_m(gp *g) {
 		// Trace the event before the transition. It may take a
 		// stack trace, but we won't own the stack after the
 		// transition anymore.
+		// 在转换之前跟踪事件。它可能会获取堆栈跟踪，但在转换之后我们将不再拥有该堆栈。
 		trace.GoPark(mp.waitTraceBlockReason, mp.waitTraceSkip)
 	}
 	// N.B. Not using casGToWaiting here because the waitreason is
 	// set by park_m's caller.
+	// 注意：这里不使用 casGToWaiting，因为 waitreason 由 park_m 的调用者设置。
 	casgstatus(gp, _Grunning, _Gwaiting)
 	if trace.ok() {
 		traceRelease(trace)
@@ -5097,9 +5144,11 @@ func park_m(gp *g) {
 				traceRelease(trace)
 			}
 			execute(gp, true) // Schedule it back, never returns.
+			// 重新调度它，永不返回。
 		}
 	}
 	schedule()
+	// 调度器选择下一个要运行的 G。
 }
 
 // goschedImpl是调度器内部使用的函数，用于将goroutine从运行状态切换到可运行状态
