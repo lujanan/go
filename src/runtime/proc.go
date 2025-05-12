@@ -460,23 +460,38 @@ func init() {
 }
 
 func forcegchelper() {
+	// 获取当前goroutine的g结构体
 	forcegc.g = getg()
+	// 初始化forcegc的锁
 	lockInit(&forcegc.lock, lockRankForcegc)
 	for {
+		// 获取forcegc的锁
 		lock(&forcegc.lock)
+		// 如果forcegc处于idle状态，抛出异常
 		if forcegc.idle.Load() {
 			throw("forcegc: phase error")
 		}
+		// 设置forcegc为idle状态
 		forcegc.idle.Store(true)
-		goparkunlock(&forcegc.lock, waitReasonForceGCIdle, traceBlockSystemGoroutine, 1)
+		// 将当前goroutine置于park状态，并释放forcegc的锁
 		// this goroutine is explicitly resumed by sysmon
+		// 这个goroutine会被sysmon显式地唤醒
+		goparkunlock(&forcegc.lock, waitReasonForceGCIdle, traceBlockSystemGoroutine, 1)
+		// 如果设置了debug.gctrace，打印"GC forced"
 		if debug.gctrace > 0 {
 			println("GC forced")
 		}
 		// Time-triggered, fully concurrent.
+		// 时间触发，完全并发的GC
 		gcStart(gcTrigger{kind: gcTriggerTime, now: nanotime()})
 	}
 }
+// forcegchelper 是一个帮助 goroutine，用于强制执行垃圾回收。
+// 它会一直运行，等待被 sysmon 唤醒，然后启动一次基于时间的垃圾回收。
+//
+// forcegchelper is a helper goroutine that forces garbage collection.
+// It runs forever, waiting to be woken up by sysmon, and then starts a
+// time-based garbage collection.
 
 // Gosched yields the processor, allowing other goroutines to run. It does not
 // suspend the current goroutine, so execution resumes automatically.
@@ -713,8 +728,10 @@ func badctxt() {
 
 // gcrash is a fake g that can be used when crashing due to bad
 // stack conditions.
+// gcrash 是一个伪造的 g，当由于错误的栈状态而崩溃时可以使用。
 var gcrash g
 
+// crashingG 是一个原子指针，用于存储当前正在崩溃的 g。
 var crashingG atomic.Pointer[g]
 
 // Switch to crashstack and call fn, with special handling of
@@ -725,20 +742,43 @@ var crashingG atomic.Pointer[g]
 //
 //go:nosplit
 //go:nowritebarrierrec
+// Switch to crashstack and call fn, with special handling of concurrent and recursive cases.
+// 切换到 crashstack 并调用 fn，同时特殊处理并发和递归的情况。
+//
+// Nosplit as it is called in a bad stack condition (we know morestack would fail).
+// 因为在糟糕的栈状态下调用它（我们知道 morestack 会失败），所以使用 nosplit。
+//
+// 在栈可能已经损坏的情况下，此函数用于在已知良好的栈上运行代码。
+// 它处理多个 goroutine 尝试同时崩溃的情况，以及递归崩溃的情况。
+//
+//go:nosplit
+//go:nowritebarrierrec
 func switchToCrashStack(fn func()) {
 	me := getg()
+	// 尝试将 crashingG 从 nil 切换到当前 g。
+	// 如果成功，则表示当前 g 是第一个尝试崩溃的 g，可以安全地切换到 crash stack。
 	if crashingG.CompareAndSwapNoWB(nil, me) {
+		// 调用汇编实现的 switchToCrashStack0 函数，该函数会切换到 crash stack 并执行 fn。
+		// switchToCrashStack0 应该永远不会返回。
 		switchToCrashStack0(fn) // should never return
+		// 如果 switchToCrashStack0 返回了，则说明出现了严重错误，直接终止程序。
 		abort()
 	}
+	// 如果 crashingG 已经是当前 g，则表示发生了递归崩溃。
 	if crashingG.Load() == me {
 		// recursive crashing. too bad.
+		// 递归崩溃，情况非常糟糕。
 		writeErrStr("fatal: recursive switchToCrashStack\n")
+		// 直接终止程序。
 		abort()
 	}
-	// Another g is crashing. Give it some time, hopefully it will finish traceback.
+	// 另一个 g 正在崩溃。
+	// Give it some time, hopefully it will finish traceback.
+	// 给它一些时间，希望它能完成 traceback。
 	usleep_no_g(100)
+	// concurrent switchToCrashStack 说明有多个 g 同时尝试崩溃，这通常是不应该发生的。
 	writeErrStr("fatal: concurrent switchToCrashStack\n")
+	// 直接终止程序。
 	abort()
 }
 
@@ -1691,16 +1731,33 @@ var stwReasonStrings = [...]string{
 
 // worldStop provides context from the stop-the-world required by the
 // start-the-world.
+// worldStop 提供 stop-the-world 所需的上下文。
 type worldStop struct {
-	reason           stwReason
-	startedStopping  int64
+	// reason is the reason for stopping the world.
+	// reason 是停止世界的原因。
+	reason stwReason
+
+	// startedStopping is the value of nanotime() when the world-stop
+	// was initiated.
+	// startedStopping 是启动 world-stop 时的 nanotime() 值。
+	startedStopping int64
+
+	// finishedStopping is the value of nanotime() when the world-stop
+	// completed.
+	// finishedStopping 是 world-stop 完成时的 nanotime() 值。
 	finishedStopping int64
-	stoppingCPUTime  int64
+
+	// stoppingCPUTime is the cumulative CPU time of all Ps during
+	// the world stop.
+	// stoppingCPUTime 是 world stop 期间所有 P 的累积 CPU 时间。
+	stoppingCPUTime int64
 }
 
 // Temporary variable for stopTheWorld, when it can't write to the stack.
 //
 // Protected by worldsema.
+// stopTheWorldContext 是一个临时变量，当 stopTheWorld 不能写入栈时使用。
+// 受 worldsema 保护。
 var stopTheWorldContext worldStop
 
 // stopTheWorld stops all P's from executing goroutines, interrupting
@@ -1720,10 +1777,22 @@ var stopTheWorldContext worldStop
 //
 // Returns the STW context. When starting the world, this context must be
 // passed to startTheWorld.
+// stopTheWorld 停止所有 P 执行 goroutines，在 GC 安全点中断所有 goroutines，
+// 并记录原因作为停止的原因。返回后，只有当前 goroutine 的 P 在运行。
+// stopTheWorld 不能从系统栈调用，调用者不能持有 worldsema。
+// 调用者必须在其他 P 恢复执行时调用 startTheWorld。
+//
+// stopTheWorld 可以被多个 goroutine 同时调用。每个 goroutine 都会执行自己的停止，
+// 并且停止操作会被序列化。
+//
+// 这也用于执行堆栈转储的例程。如果系统处于恐慌或正在退出，
+// 这可能无法可靠地停止所有 goroutines。
+//
+// 返回 STW 上下文。当启动世界时，必须将此上下文传递给 startTheWorld。
 func stopTheWorld(reason stwReason) worldStop {
-	semacquire(&worldsema)
-	gp := getg()
-	gp.m.preemptoff = reason.String()
+	semacquire(&worldsema) // Acquire the world semaphore. 获取 world 信号量。这确保了只有一个 M 可以尝试停止世界。
+	gp := getg()            // Get the current goroutine. 获取当前 goroutine。
+	gp.m.preemptoff = reason.String() // Prevent preemption of the current M. 阻止当前 M 被抢占。这可以防止在停止世界时发生意外的上下文切换。
 	systemstack(func() {
 		// Mark the goroutine which called stopTheWorld preemptible so its
 		// stack may be scanned.
@@ -1739,9 +1808,23 @@ func stopTheWorld(reason stwReason) worldStop {
 		// N.B. The execution tracer is not aware of this status
 		// transition and handles it specially based on the
 		// wait reason.
-		casGToWaitingForGC(gp, _Grunning, waitReasonStoppingTheWorld)
-		stopTheWorldContext = stopTheWorldWithSema(reason) // avoid write to stack
-		casgstatus(gp, _Gwaiting, _Grunning)
+		// 执行栈扫描。
+		// 这允许标记工作程序在尝试停止世界时扫描我们的栈。
+		// 否则我们可能会陷入相互抢占的死锁。
+		// 我们不能修改 G 栈上的任何内容，因为可能会发生栈收缩。
+		// 栈收缩是安全的，因为在退出此函数（并离开系统栈）之前，
+		// 我们必须抢占所有 goroutines，包括任何尝试扫描我们栈的 goroutines，
+		// 在这种情况下，任何栈收缩都已经完成。
+		//
+		// 注意：执行追踪器不知道这个状态转换，
+		// 它基于等待原因特别处理。
+
+		// Atomically change the G status to _Gwaiting. 原子地将 G 的状态更改为 _Gwaiting。这表明 G 正在等待 GC。
+		casGToWaitingForGC(gp, _Grunning, waitReasonStoppingTheWorld) 
+		// avoid write to stack. 调用 stopTheWorldWithSema 来实际停止世界，避免直接写入栈。
+		stopTheWorldContext = stopTheWorldWithSema(reason)             
+		// Atomically change the G status back to _Grunning. 原子地将 G 的状态改回 _Grunning。
+		casgstatus(gp, _Gwaiting, _Grunning)                           
 	})
 	return stopTheWorldContext
 }
@@ -1749,6 +1832,8 @@ func stopTheWorld(reason stwReason) worldStop {
 // startTheWorld undoes the effects of stopTheWorld.
 //
 // w must be the worldStop returned by stopTheWorld.
+// startTheWorld 撤销 stopTheWorld 的影响。
+// w 必须是 stopTheWorld 返回的 worldStop。
 func startTheWorld(w worldStop) {
 	systemstack(func() { startTheWorldWithSema(0, w) })
 
@@ -1767,29 +1852,44 @@ func startTheWorld(w worldStop) {
 	// We don't want to just allow us to get preempted between now
 	// and releasing the semaphore because then we keep everyone
 	// (including, for example, GCs) waiting longer.
-	mp := acquirem()
-	mp.preemptoff = ""
-	semrelease1(&worldsema, true, 0)
-	releasem(mp)
+	// worldsema 必须在 startTheWorldWithSema 期间持有，以确保在持有 worldsema 期间 gomaxprocs 不会更改。
+	// 使用直接切换将 worldsema 释放给下一个等待者，但 acquirem 以便 semrelease1 不会尝试让出我们的时间。
+	// 否则，如果例如 ReadMemStats 在循环中被调用，它可能会踩到其他停止世界的尝试，例如启动或结束 GC。
+	// 此操作阻止的操作非常繁重，我们应该尽可能公平地对待它。
+	// 我们不想仅仅允许我们现在到释放信号量之间被抢占，因为那样我们会让每个人（包括例如 GC）等待更长时间。
+	mp := acquirem()           // 获取当前 M。
+	mp.preemptoff = ""        // 允许当前 M 被抢占。
+	semrelease1(&worldsema, true, 0) // 释放 worldsema，允许其他 M 停止世界。
+	releasem(mp)              // 释放当前 M。
 }
 
 // stopTheWorldGC has the same effect as stopTheWorld, but blocks
 // until the GC is not running. It also blocks a GC from starting
 // until startTheWorldGC is called.
+// stopTheWorldGC 的作用与 stopTheWorld 相同，但会阻塞直到 GC 没有运行。
+// 它还会阻止 GC 启动，直到调用 startTheWorldGC。
 func stopTheWorldGC(reason stwReason) worldStop {
+	// Acquire the gcsema semaphore, which blocks until the current GC is done
+	// and prevents a new GC from starting.
+	// 获取 gcsema 信号量，它会阻塞直到当前 GC 完成，并阻止新的 GC 启动。
 	semacquire(&gcsema)
+	// Now that we hold gcsema, we can safely stop the world.
+	// 现在我们持有 gcsema，可以安全地停止世界。
 	return stopTheWorld(reason)
 }
 
 // startTheWorldGC undoes the effects of stopTheWorldGC.
 //
 // w must be the worldStop returned by stopTheWorld.
+// startTheWorldGC 撤销 stopTheWorldGC 的影响。
+// w 必须是 stopTheWorld 返回的 worldStop 上下文信息。
 func startTheWorldGC(w worldStop) {
-	startTheWorld(w)
-	semrelease(&gcsema)
+	startTheWorld(w)     // 启动世界，恢复所有 P 的运行状态。
+	semrelease(&gcsema) // 释放 gcsema 信号量，允许 GC 启动。
 }
 
 // Holding worldsema grants an M the right to try to stop the world.
+// 持有 worldsema 信号量，则 M 有权尝试停止整个世界（所有 Goroutine）。
 var worldsema uint32 = 1
 
 // Holding gcsema grants the M the right to block a GC, and blocks
@@ -1798,6 +1898,10 @@ var worldsema uint32 = 1
 //
 // TODO(mknyszek): Once gomaxprocs and the execution tracer can handle
 // being changed/enabled during a GC, remove this.
+// 持有 gcsema 信号量，则 M 有权阻止 GC 的启动，并且会阻塞直到当前 GC 完成。
+// 特别是，它可以防止 gomaxprocs 在并发情况下发生更改。
+//
+// TODO(mknyszek): 一旦 gomaxprocs 和执行跟踪器可以处理在 GC 期间被更改/启用，就移除这个信号量。
 var gcsema uint32 = 1
 
 // stopTheWorldWithSema is the core implementation of stopTheWorld.
@@ -7196,37 +7300,50 @@ func checkdead() {
 // is forced to run.
 //
 // This is a variable for testing purposes. It normally doesn't change.
+// forcegcperiod 是垃圾回收之间的最大时间间隔，以纳秒为单位。如果超过这个时间间隔没有进行垃圾回收，
+// 则会强制执行一次垃圾回收。
+//
+// 这是一个用于测试目的的变量。通常情况下，它不会改变。
 var forcegcperiod int64 = 2 * 60 * 1e9
 
 // needSysmonWorkaround is true if the workaround for
 // golang.org/issue/42515 is needed on NetBSD.
+// needSysmonWorkaround 为 true，如果需要在 NetBSD 上使用 golang.org/issue/42515 的解决方法。
 var needSysmonWorkaround bool = false
 
 // haveSysmon indicates whether there is sysmon thread support.
 //
 // No threads on wasm yet, so no sysmon.
+// haveSysmon 指示是否存在 sysmon 线程支持。
+//
+// wasm 上还没有线程，所以没有 sysmon。
 const haveSysmon = GOARCH != "wasm"
 
 // Always runs without a P, so write barriers are not allowed.
+// 总是运行在没有 P 的情况下，因此不允许写屏障。
 //
 //go:nowritebarrierrec
+//go:nowritebarrierrec 告诉编译器，这个函数不应该包含任何写屏障操作。
 func sysmon() {
-	lock(&sched.lock)
-	sched.nmsys++
-	checkdead()
-	unlock(&sched.lock)
+	lock(&sched.lock) // 加锁调度器，保护对调度器状态的访问 Lock scheduler to protect access to scheduler state.
+	sched.nmsys++      // 增加 sysmon 的数量 Increment the number of sysmon.
+	checkdead()        // 检查死锁 Check for deadlocks.
+	unlock(&sched.lock) // 解锁调度器 Unlock scheduler.
 
-	lasttrace := int64(0)
-	idle := 0 // how many cycles in succession we had not wokeup somebody
-	delay := uint32(0)
+	lasttrace := int64(0)             // 上次追踪的时间 Last time we printed trace.
+	idle := 0                          // 连续多少个周期没有唤醒任何 G How many cycles in succession we had not wokeup somebody.
+	delay := uint32(0)                 // sysmon 休眠时间，单位：微秒 Sysmon sleep time in microseconds.
 
 	for {
 		if idle == 0 { // start with 20us sleep...
+			// 如果 idle 为 0，表示刚开始或者有 G 被唤醒，则设置 delay 为 20 微秒
 			delay = 20
 		} else if idle > 50 { // start doubling the sleep after 1ms...
+			// 如果 idle 大于 50，表示已经空闲了 50 个周期（每个周期至少 20 微秒），则开始以 2 倍的速度增加休眠时间，直到 10 毫秒
 			delay *= 2
 		}
 		if delay > 10*1000 { // up to 10ms
+			// 限制 delay 最大值为 10 毫秒
 			delay = 10 * 1000
 		}
 		usleep(delay)
@@ -7246,25 +7363,46 @@ func sysmon() {
 		// application starts work again. It does not reset idle when waking
 		// from a timer to avoid adding system load to applications that spend
 		// most of their time sleeping.
+		// 如果启用了 schedtrace，sysmon 不应进入深度睡眠，以便它可以按时打印该信息。
+		//
+		// 如果有任何活动的 P，它也不应该进入深度睡眠，这样它可以从 syscalls 中取回 P，抢占长时间运行的 G，
+		// 并且如果所有 P 都长时间处于繁忙状态，则轮询网络。
+		//
+		// 如果任何 P 变为活动状态（由于退出 syscall 或由于计时器到期而唤醒），它应该从深度睡眠中唤醒，
+		// 以便它可以恢复执行这些任务。如果它从 syscall 唤醒，它会重置 idle 和 delay，
+		// 因为它认为既然它之前已经从 syscall 中取回了一个 P，那么它可能需要在应用程序再次开始工作后不久再次这样做。
+		// 从计时器唤醒时，它不会重置 idle，以避免给大部分时间都在睡眠的应用程序增加系统负载。
 		now := nanotime()
+		// If schedtrace is disabled and either GC is waiting or all P's are idle,
+		// consider transitioning to a long sleep.
+		// 如果禁用了 schedtrace 并且 GC 正在等待或者所有 P 都是空闲的，考虑转换到长时间睡眠。
 		if debug.schedtrace <= 0 && (sched.gcwaiting.Load() || sched.npidle.Load() == gomaxprocs) {
 			lock(&sched.lock)
+			// Re-check conditions after acquiring the scheduler lock.
+			// 在获取调度器锁之后重新检查条件。
 			if sched.gcwaiting.Load() || sched.npidle.Load() == gomaxprocs {
 				syscallWake := false
 				next := timeSleepUntil()
 				if next > now {
+					// Indicate that sysmon is waiting.
+					// 指示 sysmon 正在等待。
 					sched.sysmonwait.Store(true)
 					unlock(&sched.lock)
 					// Make wake-up period small enough
 					// for the sampling to be correct.
+					// 使唤醒周期足够小，以确保采样的正确性。
 					sleep := forcegcperiod / 2
 					if next-now < sleep {
 						sleep = next - now
 					}
+					// Relax OS thread if the sleep is long enough.
+					// 如果睡眠时间足够长，则放松 OS 线程。
 					shouldRelax := sleep >= osRelaxMinNS
 					if shouldRelax {
 						osRelax(true)
 					}
+					// Sleep until the next timer or GC.
+					// 睡眠直到下一个计时器或 GC。
 					syscallWake = notetsleep(&sched.sysmonnote, sleep)
 					if shouldRelax {
 						osRelax(false)
@@ -7273,6 +7411,10 @@ func sysmon() {
 					sched.sysmonwait.Store(false)
 					noteclear(&sched.sysmonnote)
 				}
+				// If syscallWake is true, then we woke up because of a syscall.
+				// In that case, reset idle and delay.
+				// 如果 syscallWake 为 true，那么我们因为 syscall 而醒来。
+				// 在这种情况下，重置 idle 和 delay。
 				if syscallWake {
 					idle = 0
 					delay = 20
@@ -7284,17 +7426,21 @@ func sysmon() {
 		lock(&sched.sysmonlock)
 		// Update now in case we blocked on sysmonnote or spent a long time
 		// blocked on schedlock or sysmonlock above.
+		// 更新 now，以防我们在 sysmonnote 上阻塞，或者在 schedlock 或 sysmonlock 上阻塞了很长时间。
 		now = nanotime()
 
 		// trigger libc interceptors if needed
+		// 如果需要，触发 libc 拦截器。
 		if *cgo_yield != nil {
 			asmcgocall(*cgo_yield, nil)
 		}
 		// poll network if not polled for more than 10ms
+		// 如果超过 10 毫秒没有轮询网络，则轮询网络。
 		lastpoll := sched.lastpoll.Load()
 		if netpollinited() && lastpoll != 0 && lastpoll+10*1000*1000 < now {
 			sched.lastpoll.CompareAndSwap(lastpoll, now)
 			list, delta := netpoll(0) // non-blocking - returns list of goroutines
+			// non-blocking - 返回 goroutine 列表
 			if !list.empty() {
 				// Need to decrement number of idle locked M's
 				// (pretending that one more is running) before injectglist.
@@ -7303,6 +7449,13 @@ func sysmon() {
 				// another M returns from syscall, finishes running its G,
 				// observes that there is no work to do and no other running M's
 				// and reports deadlock.
+				// 需要减少空闲锁定的 M 的数量
+				// （假装有一个正在运行）在 injectglist 之前。
+				// 否则可能导致以下情况：
+				// injectglist 抓取所有 P，但在它启动 M 来运行 P 之前，
+				// 另一个 M 从 syscall 返回，完成运行它的 G，
+				// 观察到没有工作要做，也没有其他正在运行的 M
+				// 并报告死锁。
 				incidlelocked(-1)
 				injectglist(&list)
 				incidlelocked(1)
@@ -7325,62 +7478,109 @@ func sysmon() {
 			//
 			// See issue 42515 and
 			// https://gnats.netbsd.org/cgi-bin/query-pr-single.pl?number=50094.
+			// netpoll 负责等待定时器到期，因此我们通常不必担心启动 M 来服务定时器。
+			// （请注意，上面的 timeSleepUntil 的 sleep 只是确保 sysmon 在该定时器到期可能导致 Go 代码再次运行时重新启动）。
+			//
+			// 但是，netbsd 有一个内核错误，有时会错过 netpollBreak 唤醒，这可能导致服务定时器的无限制延迟。 
+			// 如果我们检测到这种超限，则 startm 以获取处理定时器的东西。
+			//
+			// 参见 issue 42515 和 https://gnats.netbsd.org/cgi-bin/query-pr-single.pl?number=50094。
 			if next := timeSleepUntil(); next < now {
 				startm(nil, false, false)
 			}
 		}
 		if scavenger.sysmonWake.Load() != 0 {
 			// Kick the scavenger awake if someone requested it.
+			// 如果有人请求，则唤醒 scavenger。
 			scavenger.wake()
 		}
 		// retake P's blocked in syscalls
 		// and preempt long running G's
+		// 取回阻塞在 syscall 中的 P，并抢占长时间运行的 G。
 		if retake(now) != 0 {
 			idle = 0
 		} else {
 			idle++
 		}
 		// check if we need to force a GC
+		// 检查是否需要强制执行 GC。
 		if t := (gcTrigger{kind: gcTriggerTime, now: now}); t.test() && forcegc.idle.Load() {
-			lock(&forcegc.lock)
-			forcegc.idle.Store(false)
-			var list gList
-			list.push(forcegc.g)
-			injectglist(&list)
-			unlock(&forcegc.lock)
+			lock(&forcegc.lock) // 获取 forcegc 锁，防止并发访问 forcegc 相关状态
+			// 获取 forcegc 锁，防止并发访问 forcegc 相关状态
+			forcegc.idle.Store(false) // 设置 forcegc.idle 为 false，表示当前正在强制 GC，防止重复触发
+			// 设置 forcegc.idle 为 false，表示当前正在强制 GC，防止重复触发
+			var list gList // 创建一个 gList，用于存储需要执行 GC 的 G
+			// 创建一个 gList，用于存储需要执行 GC 的 G
+			list.push(forcegc.g) // 将 forcegc.g 添加到 gList 中
+			// 将 forcegc.g 添加到 gList 中
+			injectglist(&list) // 将 gList 中的 G 注入到运行队列中，使其可以被调度执行
+			// 将 gList 中的 G 注入到运行队列中，使其可以被调度执行
+			unlock(&forcegc.lock) // 释放 forcegc 锁
+			// 释放 forcegc 锁
 		}
 		if debug.schedtrace > 0 && lasttrace+int64(debug.schedtrace)*1000000 <= now {
+			// 如果启用了调度器跟踪，并且距离上次跟踪的时间超过了 debug.schedtrace * 1ms，则执行调度器跟踪。
 			lasttrace = now
 			schedtrace(debug.scheddetail > 0)
 		}
 		unlock(&sched.sysmonlock)
+		// 如果启用了调度器跟踪，并且距离上次跟踪的时间超过了 debug.schedtrace * 1ms，则执行调度器跟踪。
+		// debug.schedtrace 是以毫秒为单位的跟踪间隔。
+		// lasttrace 记录了上次执行调度器跟踪的时间。
+		// debug.scheddetail > 0 表示是否需要详细的调度器跟踪信息。
+
+		// 如果 scavenger.sysmonWake 不为 0，说明有人请求唤醒 scavenger。
+		// scavenger 是用于释放 arena 的组件。
+		// retake 用于 retake 被阻塞在 syscall 的 P，以及抢占运行时间过长的 G。
+		// 如果 retake 返回非 0 值，说明有 P 被 retake，因此需要将 idle 设置为 0。
+		// 否则，idle 计数器加 1。
+		// 如果满足 GC 触发条件，并且 forcegc.idle 为 true，则强制执行 GC。
+		// forcegc.idle 用于控制是否允许强制执行 GC。
+		// forcegc.g 是需要执行 GC 的 G。
+		// gcTrigger 是一个结构体，用于定义 GC 触发条件。
+		// gcTriggerTime 是基于时间的 GC 触发条件。
+		// forcegc 是一个结构体，用于控制强制 GC。
+		// forcegc.lock 用于保护 forcegc 相关的状态。
+		// forcegc.idle 用于指示是否允许强制 GC。
+		// forcegc.g 是需要执行 GC 的 G。
+		// injectglist 用于将 G 注入到运行队列中。
+		// unlock(&sched.sysmonlock) 释放 sysmon 锁。
 	}
 }
 
 type sysmontick struct {
-	schedtick   uint32
-	syscalltick uint32
-	schedwhen   int64
-	syscallwhen int64
+	schedtick   uint32 // 上次调度时 schedtick 的值
+	syscalltick uint32 // 上次进入 syscall 时 syscalltick 的值
+	schedwhen   int64  // 上次调度的时间 (纳秒)
+	syscallwhen int64  // 上次进入 syscall 的时间 (纳秒)
 }
 
 // forcePreemptNS is the time slice given to a G before it is
 // preempted.
 const forcePreemptNS = 10 * 1000 * 1000 // 10ms
+// forcePreemptNS 是一个 G 在被抢占之前所能运行的时间片。
+// 设置为 10 毫秒。
+// 调度器会检查 G 运行的时间是否超过了这个时间片，如果超过了，就会抢占这个 G。
+// 这样可以防止某个 G 占用 CPU 时间过长，导致其他 G 得不到执行。
+// forcePreemptNS 用于强制抢占 G，保证公平性。
+// 10ms
 
 func retake(now int64) uint32 {
 	n := 0
 	// Prevent allp slice changes. This lock will be completely
 	// uncontended unless we're already stopping the world.
+	// 防止 allp 切片的变化。除非我们已经在停止世界，否则这个锁将是完全无竞争的。
 	lock(&allpLock)
 	// We can't use a range loop over allp because we may
 	// temporarily drop the allpLock. Hence, we need to re-fetch
 	// allp each time around the loop.
+	// 我们不能使用 range 循环 over allp，因为我们可能会暂时放弃 allpLock。因此，我们需要在每次循环中重新获取 allp。
 	for i := 0; i < len(allp); i++ {
 		pp := allp[i]
 		if pp == nil {
 			// This can happen if procresize has grown
 			// allp but not yet created new Ps.
+			// 如果 procresize 增加了 allp 的大小，但尚未创建新的 P，则可能发生这种情况。
 			continue
 		}
 		pd := &pp.sysmontick
@@ -7391,21 +7591,29 @@ func retake(now int64) uint32 {
 			// too long. This could be from a single long-running
 			// goroutine or a sequence of goroutines run via
 			// runnext, which share a single schedtick time slice.
+			// 如果 G 在同一个 schedtick 上运行时间过长，则抢占 G。
+			// 这可能是由于单个长时间运行的 goroutine 或通过 runnext 运行的一系列 goroutine 共享一个 schedtick 时间片造成的。
 			t := int64(pp.schedtick)
 			if int64(pd.schedtick) != t {
 				pd.schedtick = uint32(t)
 				pd.schedwhen = now
+				// 如果 G 在同一个 schedtick 上运行时间过长，则抢占 G。
+				// 这可能是由于单个长时间运行的 goroutine 或通过 runnext 运行的一系列 goroutine 共享一个 schedtick 时间片造成的。
 			} else if pd.schedwhen+forcePreemptNS <= now {
 				preemptone(pp)
 				// In case of syscall, preemptone() doesn't
 				// work, because there is no M wired to P.
+				// 如果是 syscall，preemptone() 不起作用，因为没有 M 连接到 P。
 				sysretake = true
 			}
 		}
 		if s == _Psyscall {
 			// Retake P from syscall if it's there for more than 1 sysmon tick (at least 20us).
+			// 如果 P 在 syscall 中停留的时间超过 1 个 sysmon 周期（至少 20 微秒），则从 syscall 中取回 P。
 			t := int64(pp.syscalltick)
 			if !sysretake && int64(pd.syscalltick) != t {
+				// This P's syscalltick has changed since the last sysmon tick.
+				// 这个 P 的 syscalltick 自上次 sysmon 周期以来已经改变。
 				pd.syscalltick = uint32(t)
 				pd.syscallwhen = now
 				continue
@@ -7413,18 +7621,29 @@ func retake(now int64) uint32 {
 			// On the one hand we don't want to retake Ps if there is no other work to do,
 			// but on the other hand we want to retake them eventually
 			// because they can prevent the sysmon thread from deep sleep.
+			// 一方面，我们不想在没有其他工作可做时取回 P，但另一方面，我们希望最终取回它们，
+			// 因为它们可能会阻止 sysmon 线程进入深度睡眠。
 			if runqempty(pp) && sched.nmspinning.Load()+sched.npidle.Load() > 0 && pd.syscallwhen+10*1000*1000 > now {
+				// The P's run queue is empty, there are spinning or idle M's, and it hasn't been in syscall for long enough.
+				// P 的运行队列为空，有正在 spinning 或空闲的 M，并且它在 syscall 中停留的时间不够长。
 				continue
 			}
 			// Drop allpLock so we can take sched.lock.
+			// 释放 allpLock，以便我们可以获取 sched.lock。
 			unlock(&allpLock)
 			// Need to decrement number of idle locked M's
 			// (pretending that one more is running) before the CAS.
 			// Otherwise the M from which we retake can exit the syscall,
 			// increment nmidle and report deadlock.
+			// 需要减少空闲锁定的 M 的数量
+			// (假装有一个正在运行) 在 CAS 之前。
+			// 否则，我们取回的 M 可能会退出 syscall，
+			// 增加 nmidle 并报告死锁。
 			incidlelocked(-1)
 			trace := traceAcquire()
 			if atomic.Cas(&pp.status, s, _Pidle) {
+				// Successfully transitioned P to _Pidle.
+				// 成功将 P 转换为 _Pidle。
 				if trace.ok() {
 					trace.ProcSteal(pp, false)
 					traceRelease(trace)
@@ -7448,6 +7667,10 @@ func retake(now int64) uint32 {
 // processor just started running it.
 // No locks need to be held.
 // Returns true if preemption request was issued to at least one goroutine.
+// 告诉所有 goroutine 它们已经被抢占，应该停止。
+// 这个函数是尽力而为的。如果一个处理器刚刚开始运行一个 goroutine，它可能无法通知该 goroutine。
+// 不需要持有锁。
+// 如果至少向一个 goroutine 发出了抢占请求，则返回 true。
 func preemptall() bool {
 	res := false
 	for _, pp := range allp {
@@ -7471,12 +7694,20 @@ func preemptall() bool {
 // The actual preemption will happen at some point in the future
 // and will be indicated by the gp->status no longer being
 // Grunning
+// 告诉在处理器 P 上运行的 goroutine 停止。
+// 这个函数是尽力而为的。它可能无法正确地通知 goroutine。它可能会通知错误的 goroutine。
+// 即使它通知了正确的 goroutine，如果该 goroutine 同时执行 newstack，它也可能会忽略该请求。
+// 不需要持有锁。
+// 如果发出了抢占请求，则返回 true。
+// 实际的抢占将在未来的某个时间点发生，并将通过 gp->status 不再是 Grunning 来指示。
 func preemptone(pp *p) bool {
 	mp := pp.m.ptr()
+	// 如果 P 没有关联的 M，或者 M 是当前 G 所运行的 M，则无法抢占
 	if mp == nil || mp == getg().m {
 		return false
 	}
 	gp := mp.curg
+	// 如果 M 没有正在运行的 G，或者正在运行的是 g0，则无法抢占
 	if gp == nil || gp == mp.g0 {
 		return false
 	}
@@ -7487,9 +7718,12 @@ func preemptone(pp *p) bool {
 	// comparing the current stack pointer to gp->stackguard0.
 	// Setting gp->stackguard0 to StackPreempt folds
 	// preemption into the normal stack overflow check.
+	// goroutine 中的每个调用都通过将当前栈指针与 gp->stackguard0 进行比较来检查栈溢出。
+	// 将 gp->stackguard0 设置为 StackPreempt 会将抢占折叠到正常的栈溢出检查中。
 	gp.stackguard0 = stackPreempt
 
 	// Request an async preemption of this P.
+	// 请求异步抢占此 P。
 	if preemptMSupported && debug.asyncpreemptoff == 0 {
 		pp.preempt = true
 		preemptM(mp)
