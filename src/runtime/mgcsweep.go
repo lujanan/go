@@ -22,6 +22,23 @@
 // Both algorithms ultimately call mspan.sweep, which sweeps a single
 // heap span.
 
+// 垃圾收集器：清扫阶段
+
+// 清扫器由两种不同的算法组成：
+//
+// * 对象回收器(object reclaimer)负责查找和释放span中未被标记的槽位。
+//   虽然它可以释放整个span(当span中没有任何对象被标记时)，但这并不是它的主要目标。
+//   这个算法可以通过两种方式触发：
+//   1. 同步方式：通过mcentral.cacheSpan处理mcentral spans
+//   2. 异步方式：通过sweepone扫描所有的mcentral列表
+//
+// * span回收器(span reclaimer)专门查找并释放那些不包含任何标记对象的span。
+//   这是一个独立的算法，因为释放整个span是对象回收器最困难的任务，
+//   但在分配新span时这又是非常关键的。
+//   这个算法的入口点是mheap_.reclaim，它通过顺序扫描堆内存区域中的页面标记位图来工作。
+//
+// 这两种算法最终都会调用mspan.sweep，用于清扫单个堆span。
+
 package runtime
 
 import (

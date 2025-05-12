@@ -15,13 +15,15 @@ import (
 )
 
 const (
-	fixedRootFinalizers = iota
-	fixedRootFreeGStacks
-	fixedRootCount
+	// 固定根对象的类型枚举
+	fixedRootFinalizers  = iota // 终结器根对象
+	fixedRootFreeGStacks        // 空闲G栈根对象
+	fixedRootCount              // 根对象类型计数
 
 	// rootBlockBytes is the number of bytes to scan per data or
 	// BSS root.
-	rootBlockBytes = 256 << 10
+	// rootBlockBytes 定义了每次扫描数据段或BSS段根对象时的字节数
+	rootBlockBytes = 256 << 10 // 256KB
 
 	// maxObletBytes is the maximum bytes of an object to scan at
 	// once. Larger objects will be split up into "oblets" of at
@@ -30,7 +32,11 @@ const (
 	//
 	// This must be > _MaxSmallSize so that the object base is the
 	// span base.
-	maxObletBytes = 128 << 10
+	// maxObletBytes 定义了单个对象扫描时的最大字节数。
+	// 更大的对象会被分割成不超过这个大小的"oblets"。
+	// 由于扫描速度约为1-2MB/ms，128KB的限制使得扫描抢占时间约为100微秒。
+	// 这个值必须大于_MaxSmallSize，以确保对象基址就是span基址。
+	maxObletBytes = 128 << 10 // 128KB
 
 	// drainCheckThreshold specifies how many units of work to do
 	// between self-preemption checks in gcDrain. Assuming a scan
@@ -38,6 +44,10 @@ const (
 	// overhead in the scan loop (the scheduler check may perform
 	// a syscall, so its overhead is nontrivial). Higher values
 	// make the system less responsive to incoming work.
+	// drainCheckThreshold 指定了在gcDrain中进行自抢占检查之间要完成的工作单元数。
+	// 假设扫描速率为1MB/ms，这相当于约100微秒。
+	// 较低的值会增加扫描循环的开销（调度器检查可能涉及系统调用，开销不小）。
+	// 较高的值会降低系统对传入工作的响应性。
 	drainCheckThreshold = 100000
 
 	// pagesPerSpanRoot indicates how many pages to scan from a span root
@@ -48,6 +58,9 @@ const (
 	//
 	// Must be a multiple of the pageInUse bitmap element size and
 	// must also evenly divide pagesPerArena.
+	// pagesPerSpanRoot 定义了每次从span根对象扫描的页数。用于特殊根对象标记。
+	// 较高的值通过增加局部性来提高吞吐量，但会增加标记操作的最小延迟。
+	// 必须是pageInUse位图元素大小的倍数，并且必须能整除pagesPerArena。
 	pagesPerSpanRoot = 512
 )
 
@@ -55,24 +68,31 @@ const (
 // some miscellany) and initializes scanning-related state.
 //
 // The world must be stopped.
+// gcMarkRootPrepare 函数用于准备根对象扫描工作，包括栈、全局变量和其他杂项，
+// 并初始化与扫描相关的状态。调用此函数时，必须停止世界（STW）。
 func gcMarkRootPrepare() {
 	assertWorldStopped()
 
 	// Compute how many data and BSS root blocks there are.
+	// 计算数据段和BSS段根对象的块数
 	nBlocks := func(bytes uintptr) int {
 		return int(divRoundUp(bytes, rootBlockBytes))
 	}
 
+	// 初始化数据段和BSS段根对象计数
 	work.nDataRoots = 0
 	work.nBSSRoots = 0
 
 	// Scan globals.
+	// 扫描全局变量
 	for _, datap := range activeModules() {
+		// 计算数据段根对象块数
 		nDataRoots := nBlocks(datap.edata - datap.data)
 		if nDataRoots > work.nDataRoots {
 			work.nDataRoots = nDataRoots
 		}
 
+		// 计算BSS段根对象块数
 		nBSSRoots := nBlocks(datap.ebss - datap.bss)
 		if nBSSRoots > work.nBSSRoots {
 			work.nBSSRoots = nBSSRoots
@@ -91,6 +111,11 @@ func gcMarkRootPrepare() {
 	//
 	// Snapshot allArenas as markArenas. This snapshot is safe because allArenas
 	// is append-only.
+	// 扫描span根对象以查找终结器特殊对象
+	// 我们依赖addfinalizer来标记在根对象标记之后获得终结器的对象
+	// 我们将扫描整个堆（在标记阶段开始时可用的堆，即markArenas）中具有特殊对象的正在使用的span
+	// 将工作分解为arena，并进一步分解为块
+	// 将allArenas快照为markArenas。这个快照是安全的，因为allArenas是只追加的
 	mheap_.markArenas = mheap_.allArenas[:len(mheap_.allArenas):len(mheap_.allArenas)]
 	work.nSpanRoots = len(mheap_.markArenas) * (pagesPerArena / pagesPerSpanRoot)
 
@@ -100,13 +125,19 @@ func gcMarkRootPrepare() {
 	// ignore them because they begin life without any roots, so
 	// there's nothing to scan, and any roots they create during
 	// the concurrent phase will be caught by the write barrier.
+	// 扫描栈
+	// 在此点之后可能会创建新的G，但我们可以忽略它们，因为它们开始时没有任何根对象，
+	// 所以没有需要扫描的内容，它们在并发阶段创建的任何根对象都会被写屏障捕获
 	work.stackRoots = allGsSnapshot()
 	work.nStackRoots = len(work.stackRoots)
 
+	// 初始化下一个要扫描的根对象索引
 	work.markrootNext = 0
+	// 计算总的根对象扫描任务数
 	work.markrootJobs = uint32(fixedRootCount + work.nDataRoots + work.nBSSRoots + work.nSpanRoots + work.nStackRoots)
 
 	// Calculate base indexes of each root type
+	// 计算每种根对象类型的基准索引
 	work.baseData = uint32(fixedRootCount)
 	work.baseBSS = work.baseData + uint32(work.nDataRoots)
 	work.baseSpans = work.baseBSS + uint32(work.nBSSRoots)
@@ -116,7 +147,10 @@ func gcMarkRootPrepare() {
 
 // gcMarkRootCheck checks that all roots have been scanned. It is
 // purely for debugging.
+// gcMarkRootCheck 检查是否所有根对象都已被扫描。这个函数仅用于调试目的。
 func gcMarkRootCheck() {
+	// 检查是否所有根对象扫描任务都已完成
+	// 如果还有未完成的扫描任务，则打印错误信息并抛出异常
 	if work.markrootNext < work.markrootJobs {
 		print(work.markrootNext, " of ", work.markrootJobs, " markroot jobs done\n")
 		throw("left over markroot jobs")
@@ -127,12 +161,18 @@ func gcMarkRootCheck() {
 	// We only check the first nStackRoots Gs that we should have scanned.
 	// Since we don't care about newer Gs (see comment in
 	// gcMarkRootPrepare), no locking is required.
+	// 检查所有栈是否已被扫描
+	//
+	// 我们只检查应该被扫描的前nStackRoots个G
+	// 由于我们不关心新创建的G（参见gcMarkRootPrepare中的注释），所以不需要加锁
 	i := 0
 	forEachGRace(func(gp *g) {
+		// 如果已经检查了足够数量的G，则返回
 		if i >= work.nStackRoots {
 			return
 		}
 
+		// 如果发现某个G的栈未被扫描，则打印该G的信息并抛出异常
 		if !gp.gcscandone {
 			println("gp", gp, "goid", gp.goid,
 				"status", readgstatus(gp),
@@ -145,6 +185,7 @@ func gcMarkRootCheck() {
 }
 
 // ptrmask for an allocation containing a single pointer.
+// oneptrmask 是一个包含单个指针的分配的位掩码
 var oneptrmask = [...]uint8{1}
 
 // markroot scans the i'th root.
