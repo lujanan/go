@@ -13,36 +13,57 @@ import (
 
 type mstats struct {
 	// Statistics about malloc heap.
+	// 关于 malloc 堆的统计信息。
 	heapStats consistentHeapStats
 
 	// Statistics about stacks.
+	// 关于栈的统计信息。
+	// 只计算 mstats 中的 newosproc0 栈；与 MemStats.StackSys 不同
 	stacks_sys sysMemStat // only counts newosproc0 stack in mstats; differs from MemStats.StackSys
 
 	// Statistics about allocation of low-level fixed-size structures.
+	// 关于底层固定大小结构分配的统计信息。
 	mspan_sys    sysMemStat
 	mcache_sys   sysMemStat
+	// profiling bucket hash table，用于性能分析的桶哈希表
 	buckhash_sys sysMemStat // profiling bucket hash table
 
 	// Statistics about GC overhead.
+	// 关于 GC 开销的统计信息。
+	// 原子更新或在 STW 期间更新
 	gcMiscSys sysMemStat // updated atomically or during STW
 
 	// Miscellaneous statistics.
+	// 各种统计信息。
+	// 原子更新或在 STW 期间更新
 	other_sys sysMemStat // updated atomically or during STW
 
 	// Statistics about the garbage collector.
+	// 关于垃圾收集器的统计信息。
 
 	// Protected by mheap or worldsema during GC.
+	// 在 GC 期间受 mheap 或 worldsema 保护。
+	// 上次 GC（以 Unix 时间表示）
 	last_gc_unix    uint64 // last gc (in unix time)
+	// GC 暂停的总时间（纳秒）
 	pause_total_ns  uint64
+	// 最近 GC 暂停时长的循环缓冲区
 	pause_ns        [256]uint64 // circular buffer of recent gc pause lengths
+	// 最近 GC 结束时间的循环缓冲区（自 1970 年以来的纳秒数）
 	pause_end       [256]uint64 // circular buffer of recent gc end times (nanoseconds since 1970)
+	// GC 执行的次数
 	numgc           uint32
+	// 用户强制执行的 GC 次数
 	numforcedgc     uint32  // number of user-forced GCs
+	// GC 使用的 CPU 时间比例
 	gc_cpu_fraction float64 // fraction of CPU time used by GC
 
+	// 上次 GC（单调时间）
 	last_gc_nanotime uint64 // last gc (monotonic time)
+	// 前一次 GC 标记终止时的 heapInUse
 	lastHeapInUse    uint64 // heapInUse at mark termination of the previous GC
 
+	// 是否启用 GC
 	enablegc bool
 }
 

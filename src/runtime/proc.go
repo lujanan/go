@@ -4877,6 +4877,12 @@ func resetspinning() {
 // local run queue.
 // This may temporarily acquire sched.lock.
 // Can run concurrently with GC.
+// injectglist 将列表中的每个可运行的 G 添加到某个运行队列，并清除 glist。
+// 如果没有当前的 P，它们将被添加到全局队列中，并且最多启动 npidle 个 M 来运行它们。
+// 否则，对于每个空闲的 P，这会将一个 G 添加到全局队列并启动一个 M。
+// 任何剩余的 G 都会被添加到当前 P 的本地运行队列中。
+// 这可能会暂时获取 sched.lock。
+// 可以与 GC 并发运行。
 func injectglist(glist *gList) {
 	if glist.empty() {
 		return
@@ -4884,74 +4890,129 @@ func injectglist(glist *gList) {
 
 	// Mark all the goroutines as runnable before we put them
 	// on the run queues.
-	head := glist.head.ptr()
-	var tail *g
-	qsize := 0
-	trace := traceAcquire()
-	for gp := head; gp != nil; gp = gp.schedlink.ptr() {
-		tail = gp
-		qsize++
-		casgstatus(gp, _Gwaiting, _Grunnable)
-		if trace.ok() {
-			trace.GoUnpark(gp, 0)
+	// 在将所有 goroutine 放入运行队列之前，将它们标记为可运行状态。
+	head := glist.head.ptr() // 获取 gList 的头部 G
+	// 获取 gList 的头部 G
+	var tail *g // 尾部 G 指针
+	// 尾部 G 指针
+	qsize := 0 // 队列大小
+	// 队列大小
+	trace := traceAcquire() // 获取跟踪器
+	// 获取跟踪器
+	for gp := head; gp != nil; gp = gp.schedlink.ptr() { // 遍历 gList
+		// 遍历 gList
+		tail = gp // 更新尾部 G
+		// 更新尾部 G
+		qsize++ // 增加队列大小
+		// 增加队列大小
+		casgstatus(gp, _Gwaiting, _Grunnable) // 将 G 的状态从 _Gwaiting 更改为 _Grunnable
+		// 将 G 的状态从 _Gwaiting 更改为 _Grunnable
+		if trace.ok() { // 如果启用了跟踪
+			// 如果启用了跟踪
+			trace.GoUnpark(gp, 0) // 记录 G 被 unparked 的事件
+			// 记录 G 被 unparked 的事件
 		}
 	}
-	if trace.ok() {
-		traceRelease(trace)
+	if trace.ok() { // 如果启用了跟踪
+		// 如果启用了跟踪
+		traceRelease(trace) // 释放跟踪器
+		// 释放跟踪器
 	}
 
 	// Turn the gList into a gQueue.
-	var q gQueue
-	q.head.set(head)
-	q.tail.set(tail)
-	*glist = gList{}
+	// 将 gList 转换为 gQueue。
+	var q gQueue // 声明一个 gQueue 类型的变量 q
+	// 声明一个 gQueue 类型的变量 q
+	q.head.set(head) // 设置 gQueue 的头部为 gList 的头部
+	// 设置 gQueue 的头部为 gList 的头部
+	q.tail.set(tail) // 设置 gQueue 的尾部为 gList 的尾部
+	// 设置 gQueue 的尾部为 gList 的尾部
+	*glist = gList{} // 清空 gList
+	// 清空 gList
 
+	// startIdle starts new M's to run the G's in global queue.
+	// startIdle 启动新的 M 来运行全局队列中的 G。
 	startIdle := func(n int) {
+		// 启动 n 个 idle 的 M 来运行 G
 		for i := 0; i < n; i++ {
-			mp := acquirem() // See comment in startm.
-			lock(&sched.lock)
+			mp := acquirem() // See comment in startm. 获取一个 M
+			// 获取一个 M
+			lock(&sched.lock) // 获取调度器锁
+			// 获取调度器锁
 
-			pp, _ := pidlegetSpinning(0)
-			if pp == nil {
-				unlock(&sched.lock)
-				releasem(mp)
-				break
+			pp, _ := pidlegetSpinning(0) // 获取一个 spinning 状态的 P
+			// 获取一个 spinning 状态的 P
+			if pp == nil { // 如果没有空闲的 P
+				// 如果没有空闲的 P
+				unlock(&sched.lock) // 释放调度器锁
+				// 释放调度器锁
+				releasem(mp) // 释放 M
+				// 释放 M
+				break // 退出循环
+				// 退出循环
 			}
 
-			startm(pp, false, true)
-			unlock(&sched.lock)
-			releasem(mp)
+			startm(pp, false, true) // 启动 M 来运行 P
+			// 启动 M 来运行 P
+			unlock(&sched.lock) // 释放调度器锁
+			// 释放调度器锁
+			releasem(mp) // 释放 M
+			// 释放 M
 		}
 	}
 
 	pp := getg().m.p.ptr()
+	// Get the current P. 获取当前的 P。
 	if pp == nil {
+		// If there is no current P, move all Gs to the global queue and start idle Ms.
+		// 如果没有当前的 P，将所有的 G 移动到全局队列并启动空闲的 M。
+		// Lock the scheduler. 锁定调度器。
 		lock(&sched.lock)
+		// Move all Gs to the global run queue. 将所有的 G 移动到全局运行队列。
 		globrunqputbatch(&q, int32(qsize))
+		// Unlock the scheduler. 释放调度器锁。
 		unlock(&sched.lock)
+		// Start idle Ms to run the Gs. 启动空闲的 M 来运行 G。
 		startIdle(qsize)
 		return
 	}
 
 	npidle := int(sched.npidle.Load())
+	// Get the number of idle Ps. 获取空闲 P 的数量。
 	var (
 		globq gQueue
 		n     int
 	)
+	// Move some Gs to the global queue if there are idle Ps.
+	// 如果有空闲的 P，将一些 G 移动到全局队列。
 	for n = 0; n < npidle && !q.empty(); n++ {
+		// Iterate up to the number of idle Ps or until the queue is empty.
+		// 迭代到空闲 P 的数量或直到队列为空。
 		g := q.pop()
+		// Pop a G from the queue. 从队列中弹出一个 G。
 		globq.pushBack(g)
+		// Push the G to the global queue. 将 G 推到全局队列。
 	}
 	if n > 0 {
+		// If we moved any Gs to the global queue, start idle Ms.
+		// 如果我们将任何 G 移动到全局队列，则启动空闲的 M。
 		lock(&sched.lock)
+		// Lock the scheduler. 锁定调度器。
 		globrunqputbatch(&globq, int32(n))
+		// Move the Gs to the global run queue. 将 G 移动到全局运行队列。
 		unlock(&sched.lock)
+		// Unlock the scheduler. 释放调度器锁。
 		startIdle(n)
+		// Start idle Ms to run the Gs. 启动空闲的 M 来运行 G。
 		qsize -= n
+		// Reduce the number of Gs left in the local queue. 减少本地队列中剩余的 G 的数量。
 	}
 
 	if !q.empty() {
+		// If there are any Gs left in the local queue, put them on the current P's run queue.
+		// 如果本地队列中还有任何 G，将它们放在当前 P 的运行队列中。
 		runqputbatch(pp, &q, qsize)
+		// Put the Gs on the current P's run queue. 将 G 放在当前 P 的运行队列中。
 	}
 
 	// Some P's might have become idle after we loaded `sched.npidle`

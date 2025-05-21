@@ -409,12 +409,12 @@ var writeBarrier struct {
 var gcBlackenEnabled uint32
 
 const (
-	_GCoff = iota // GC not running; sweeping in background, write barrier disabled
 	// GC未运行；后台进行清扫，写屏障禁用
-	_GCmark // GC marking roots and workbufs: allocate black, write barrier ENABLED
+	_GCoff = iota // GC not running; sweeping in background, write barrier disabled
 	// GC正在标记根对象和工作缓冲区：分配黑色对象，写屏障启用
-	_GCmarktermination // GC mark termination: allocate black, P's help GC, write barrier ENABLED
+	_GCmark // GC marking roots and workbufs: allocate black, write barrier ENABLED
 	// GC标记终止阶段：分配黑色对象，P协助GC，写屏障启用
+	_GCmarktermination // GC mark termination: allocate black, P's help GC, write barrier ENABLED
 )
 
 // setGCPhase sets the current GC phase and updates the write barrier state.

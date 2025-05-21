@@ -1641,26 +1641,26 @@ const (
 	// The constants are obscured in this way for efficiency. The denominator
 	// of the fraction is always a power-of-two for a quick division, so that
 	// the numerator is a single constant integer multiplication.
-	triggerRatioDen = 64
 	// 这些常量决定了GC触发的边界，它表示从GC开始（heapLive == heapMarked）
 	// 到GC结束（heapLive == heapGoal）之间分配的堆字节数的分数。
 	//
 	// 为了效率，这些常量以这种方式被模糊化。分母始终是2的幂，以便快速除法，
 	// 这样分子就是一个简单的常数整数乘法。
+	triggerRatioDen = 64
 
 	// The minimum trigger constant was chosen empirically: given a sufficiently
 	// fast/scalable allocator with 48 Ps that could drive the trigger ratio
 	// to <0.05, this constant causes applications to retain the same peak
 	// RSS compared to not having this allocator.
-	minTriggerRatioNum = 45 // ~0.7
 	// 最小触发常量是根据经验选择的：给定一个足够快/可扩展的分配器，
 	// 具有48个Ps，可以将触发比率驱动到<0.05，此常量使应用程序保持与
 	// 没有此分配器时相同的峰值RSS。
+	minTriggerRatioNum = 45 // ~0.7
 
 	// The maximum trigger constant is chosen somewhat arbitrarily, but the
 	// current constant has served us well over the years.
-	maxTriggerRatioNum = 61 // ~0.95
 	// 最大触发常量是随意选择的，但是当前的常量多年来一直为我们服务。
+	maxTriggerRatioNum = 61 // ~0.95
 )
 
 // trigger returns the current point at which a GC should trigger along with
