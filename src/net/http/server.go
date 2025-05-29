@@ -2386,128 +2386,221 @@ func RedirectHandler(url string, code int) Handler {
 }
 
 // ServeMux is an HTTP request multiplexer.
+// ServeMux 是一个 HTTP 请求多路复用器。
 // It matches the URL of each incoming request against a list of registered
 // patterns and calls the handler for the pattern that
 // most closely matches the URL.
+// 它将每个传入请求的 URL 与一个已注册的模式列表进行匹配，并调用与 URL 最匹配的模式所对应的处理器。
 //
 // # Patterns
+// # 模式
+// ServeMux 支持多种模式匹配规则，允许根据请求的方法、主机和路径进行灵活的路由。
 //
 // Patterns can match the method, host and path of a request.
+// 模式可以匹配请求的方法、主机和路径。
 // Some examples:
+// 一些示例：
 //
 //   - "/index.html" matches the path "/index.html" for any host and method.
+//   - "/index.html"：匹配任何主机和任何方法，只要请求路径是 "/index.html"。
 //   - "GET /static/" matches a GET request whose path begins with "/static/".
+//   - "GET /static/"：匹配方法为 GET 且路径以 "/static/" 开头的请求。
 //   - "example.com/" matches any request to the host "example.com".
+//   - "example.com/"：匹配发送到主机 "example.com" 的任何请求，无论路径如何。
 //   - "example.com/{$}" matches requests with host "example.com" and path "/".
+//   - "example.com/{$}"：匹配主机为 "example.com" 且路径恰好是 "/" 的请求。这里的 `{$}` 是一个特殊通配符，表示路径的精确结束。
 //   - "/b/{bucket}/o/{objectname...}" matches paths whose first segment is "b"
 //     and whose third segment is "o". The name "bucket" denotes the second
 //     segment and "objectname" denotes the remainder of the path.
+//   - "/b/{bucket}/o/{objectname...}"：匹配路径的第一个段是 "b"、第三个段是 "o" 的路径。其中 "bucket" 表示路径的第二个段（一个通配符），"objectname" 表示路径的剩余部分（一个捕获所有后续段的通配符）。
 //
 // In general, a pattern looks like
+// 通常，一个模式看起来像这样：
 //
 //	[METHOD ][HOST]/[PATH]
 //
 // All three parts are optional; "/" is a valid pattern.
+// 这三部分都是可选的；"/" 是一个有效的模式。
 // If METHOD is present, it must be followed by at least one space or tab.
+// 如果 METHOD 存在，它后面必须至少跟一个空格或制表符。
 //
 // Literal (that is, non-wildcard) parts of a pattern match
 // the corresponding parts of a request case-sensitively.
+// 模式中的字面（即非通配符）部分与请求的相应部分进行大小写敏感的匹配。
 //
 // A pattern with no method matches every method. A pattern
 // with the method GET matches both GET and HEAD requests.
 // Otherwise, the method must match exactly.
+// 没有指定方法的模式会匹配所有 HTTP 方法。
+// 指定了 GET 方法的模式会同时匹配 GET 和 HEAD 请求（因为 HEAD 请求通常被视为 GET 请求的变体，只返回头部）。
+// 除此之外，其他方法（如 POST, PUT, DELETE 等）必须精确匹配。
 //
 // A pattern with no host matches every host.
+// 没有指定主机的模式会匹配所有主机。
 // A pattern with a host matches URLs on that host only.
+// 指定了主机的模式只匹配该主机上的 URL。
 //
 // A path can include wildcard segments of the form {NAME} or {NAME...}.
+// 路径可以包含形如 {NAME} 或 {NAME...} 的通配符段。
 // For example, "/b/{bucket}/o/{objectname...}".
+// 例如，"/b/{bucket}/o/{objectname...}"。
 // The wildcard name must be a valid Go identifier.
+// 通配符的名称必须是有效的 Go 标识符（例如，不能包含特殊字符或以数字开头）。
 // Wildcards must be full path segments: they must be preceded by a slash and followed by
 // either a slash or the end of the string.
+// 通配符必须是完整的路径段：它们必须以斜杠开头，并以斜杠或字符串的结尾结束。
 // For example, "/b_{bucket}" is not a valid pattern.
+// 例如，"/b_{bucket}" 不是一个有效的模式，因为通配符 `{bucket}` 没有被斜杠完全包围。
 //
 // Normally a wildcard matches only a single path segment,
 // ending at the next literal slash (not %2F) in the request URL.
+// 通常，一个通配符（如 {NAME}）只匹配单个路径段，在请求 URL 中遇到下一个字面斜杠（而不是编码后的 %2F）时结束匹配。
 // But if the "..." is present, then the wildcard matches the remainder of the URL path, including slashes.
+// 但如果存在 "..."（如 {NAME...}），则该通配符会匹配 URL 路径的剩余部分，包括其中的斜杠。
 // (Therefore it is invalid for a "..." wildcard to appear anywhere but at the end of a pattern.)
+// （因此，"..." 通配符不能出现在模式的末尾以外的任何位置，因为它会匹配所有剩余部分。）
 // The match for a wildcard can be obtained by calling [Request.PathValue] with the wildcard's name.
+// 通配符的匹配值可以通过调用 [Request.PathValue] 方法并传入通配符的名称来获取。
 // A trailing slash in a path acts as an anonymous "..." wildcard.
+// 路径末尾的斜杠（例如 "/foo/"）等同于一个匿名的 "..." 通配符，它会匹配以 "/foo/" 开头的所有路径。
 //
 // The special wildcard {$} matches only the end of the URL.
+// 特殊通配符 {$} 只匹配 URL 的末尾。
 // For example, the pattern "/{$}" matches only the path "/",
+// 例如，模式 "/{$}" 只匹配路径 "/"。
 // whereas the pattern "/" matches every path.
+// 而模式 "/" 则匹配所有路径（包括 "/"、"/foo"、"/foo/bar" 等）。
 //
 // For matching, both pattern paths and incoming request paths are unescaped segment by segment.
+// 为了进行匹配，模式路径和传入的请求路径都会逐段进行解码（unescaped）。
 // So, for example, the path "/a%2Fb/100%25" is treated as having two segments, "a/b" and "100%".
+// 因此，例如，路径 "/a%2Fb/100%25" 被视为包含两个段："a/b" 和 "100%"。
 // The pattern "/a%2fb/" matches it, but the pattern "/a/b/" does not.
+// 模式 "/a%2fb/" 可以匹配它（因为 %2f 解码后是斜杠，形成 "a/b" 段），但模式 "/a/b/" 则不能匹配（因为 "/a/b/" 会尝试匹配字面上的 "a" 和 "b" 段，而不是解码后的 "a/b"）。
 //
 // # Precedence
+// # 优先级
 //
 // If two or more patterns match a request, then the most specific pattern takes precedence.
+// 如果有两个或更多模式匹配一个请求，则最具体的模式（匹配范围最窄、最精确的模式）将优先。
 // A pattern P1 is more specific than P2 if P1 matches a strict subset of P2’s requests;
+// 如果模式 P1 匹配的请求集合是模式 P2 匹配的请求集合的严格子集，则 P1 比 P2 更具体；
 // that is, if P2 matches all the requests of P1 and more.
+// 也就是说，如果 P2 匹配了 P1 的所有请求，并且还匹配了 P1 未匹配到的其他请求，那么 P1 更具体。
 // If neither is more specific, then the patterns conflict.
+// 如果两个模式都没有比对方更具体（即它们匹配的请求集合存在交集但互不包含），则这些模式冲突。
 // There is one exception to this rule, for backwards compatibility:
+// 为了向后兼容，此规则有一个例外：
 // if two patterns would otherwise conflict and one has a host while the other does not,
+// 如果两个模式原本会冲突，但其中一个模式指定了主机（例如 "example.com/path"），而另一个模式没有指定主机（例如 "/path"），
 // then the pattern with the host takes precedence.
+// 则指定了主机的模式会优先。
 // If a pattern passed to [ServeMux.Handle] or [ServeMux.HandleFunc] conflicts with
+// 如果传递给 [ServeMux.Handle] 或 [ServeMux.HandleFunc] 的模式与
 // another pattern that is already registered, those functions panic.
+// 已经注册的其他模式发生冲突，则这些函数会引发 panic。
 //
 // As an example of the general rule, "/images/thumbnails/" is more specific than "/images/",
+// 作为一般规则的一个例子，模式 "/images/thumbnails/" 比 "/images/" 更具体，
 // so both can be registered.
+// 因此两者可以同时注册。
 // The former matches paths beginning with "/images/thumbnails/"
+// 前者（"/images/thumbnails/"）会匹配所有以 "/images/thumbnails/" 开头的路径，
 // and the latter will match any other path in the "/images/" subtree.
+// 而后者（"/images/"）将匹配 "/images/" 子树中除前者匹配范围之外的其他路径。
 //
 // As another example, consider the patterns "GET /" and "/index.html":
+// 另一个例子是，考虑模式 "GET /" 和 "/index.html"：
 // both match a GET request for "/index.html", but the former pattern
+// 它们都匹配对 "/index.html" 的 GET 请求，但前者（"GET /"）模式
 // matches all other GET and HEAD requests, while the latter matches any
+// 匹配所有其他 GET 和 HEAD 请求（例如 "GET /foo"），而后者（"/index.html"）匹配任何
 // request for "/index.html" that uses a different method.
+// 对 "/index.html" 使用不同方法（例如 POST /index.html）的请求。
 // The patterns conflict.
+// 这两个模式是冲突的，因为它们匹配的请求集合存在交集（GET /index.html）但互不包含。
 //
 // # Trailing-slash redirection
+// # 尾部斜杠重定向
 //
 // Consider a [ServeMux] with a handler for a subtree, registered using a trailing slash or "..." wildcard.
+// 考虑一个 [ServeMux]，它为一个子树注册了一个处理器，该子树的模式以尾部斜杠（例如 "/images/"）或 "..." 通配符（例如 "/files/..."）结尾。
 // If the ServeMux receives a request for the subtree root without a trailing slash,
 // it redirects the request by adding the trailing slash.
+// 如果 ServeMux 收到一个针对该子树根路径的请求，但该请求没有尾部斜杠（例如 "/images"），
+// 它会自动通过添加尾部斜杠的方式重定向该请求（例如重定向到 "/images/"）。
 // This behavior can be overridden with a separate registration for the path without
 // the trailing slash or "..." wildcard. For example, registering "/images/" causes ServeMux
 // to redirect a request for "/images" to "/images/", unless "/images" has
 // been registered separately.
+// 这种重定向行为可以通过为不带尾部斜杠或 "..." 通配符的路径单独注册一个处理器来覆盖。
+// 例如，注册模式 "/images/" 会导致 ServeMux 将对 "/images" 的请求重定向到 "/images/"，
+// 除非你已经单独注册了 "/images" 这个精确路径的处理器。
 //
 // # Request sanitizing
+// # 请求净化
 //
 // ServeMux also takes care of sanitizing the URL request path and the Host
 // header, stripping the port number and redirecting any request containing . or
 // .. segments or repeated slashes to an equivalent, cleaner URL.
+// ServeMux 还会负责净化 URL 请求路径和 Host 头。
+// 它会剥离 Host 头中的端口号，并将任何包含 "."（当前目录）或 ".."（上级目录）路径段，
+// 或包含重复斜杠（例如 "//"）的请求重定向到一个等效的、更规范的 URL。
+// 这种净化有助于提高安全性并确保路径匹配的一致性。
 //
 // # Compatibility
+// # 兼容性
 //
 // The pattern syntax and matching behavior of ServeMux changed significantly
 // in Go 1.22. To restore the old behavior, set the GODEBUG environment variable
 // to "httpmuxgo121=1". This setting is read once, at program startup; changes
 // during execution will be ignored.
+// ServeMux 的模式语法和匹配行为在 Go 1.22 版本中发生了显著变化。
+// 为了恢复到 Go 1.21 及以前版本的旧行为，可以将 GODEBUG 环境变量设置为 "httpmuxgo121=1"。
+// 此设置在程序启动时只读取一次；在程序执行期间对该环境变量的任何更改都将被忽略，不会影响 ServeMux 的行为。
+// 这为需要时间迁移到新行为的现有应用程序提供了向后兼容的选项。
 //
 // The backwards-incompatible changes include:
+// 这些向后不兼容的更改包括：
 //   - Wildcards are just ordinary literal path segments in 1.21.
 //     For example, the pattern "/{x}" will match only that path in 1.21,
 //     but will match any one-segment path in 1.22.
+//   - 在 Go 1.21 中，通配符（如 `{x}`）被视为普通的字面路径段。
+//     例如，模式 "/{x}" 在 1.21 中只会精确匹配路径 "/{x}"。
+//     但在 Go 1.22 中，它会匹配任何由一个路径段组成的路径，例如 "/foo" 或 "/bar"，其中 "foo" 或 "bar" 会被捕获为 `{x}` 的值。
 //   - In 1.21, no pattern was rejected, unless it was empty or conflicted with an existing pattern.
 //     In 1.22, syntactically invalid patterns will cause [ServeMux.Handle] and [ServeMux.HandleFunc] to panic.
 //     For example, in 1.21, the patterns "/{"  and "/a{x}" match themselves,
 //     but in 1.22 they are invalid and will cause a panic when registered.
+//   - 在 Go 1.21 中，除了空模式或与现有模式冲突的模式外，其他所有模式都不会被拒绝。
+//     但在 Go 1.22 中，语法上无效的模式（例如不完整的通配符语法）将导致 [ServeMux.Handle] 和 [ServeMux.HandleFunc] 方法在注册时触发 panic。
+//     例如，在 1.21 中，模式 "/{" 和 "/a{x}" 会被视为字面路径并匹配它们自身。
+//     但在 1.22 中，这些模式被认为是无效的通配符语法，因此在注册时会引发 panic。
 //   - In 1.22, each segment of a pattern is unescaped; this was not done in 1.21.
 //     For example, in 1.22 the pattern "/%61" matches the path "/a" ("%61" being the URL escape sequence for "a"),
 //     but in 1.21 it would match only the path "/%2561" (where "%25" is the escape for the percent sign).
+//   - 在 Go 1.22 中，模式的每个路径段都会被 URL 解码（unescaped）；而在 1.21 中则没有这样做。
+//     例如，在 1.22 中，模式 "/%61" 会匹配路径 "/a"（因为 "%61" 是字符 "a" 的 URL 编码）。
+//     但在 1.21 中，它只会匹配路径 "/%2561"（因为 "%25" 是百分号的编码，所以 "%61" 被视为字面量，而不会被解码）。
 //   - When matching patterns to paths, in 1.22 each segment of the path is unescaped; in 1.21, the entire path is unescaped.
 //     This change mostly affects how paths with %2F escapes adjacent to slashes are treated.
 //     See https://go.dev/issue/21955 for details.
+//   - 在将模式与请求路径匹配时，Go 1.22 会对路径的每个段进行 URL 解码；而在 1.21 中，是对整个路径进行一次性解码。
+//     这一变化主要影响了包含 "%2F"（斜杠的 URL 编码）且紧邻实际斜杠的路径的处理方式。
+//     有关详细信息，请参阅 https://go.dev/issue/21955。
 type ServeMux struct {
-	mu       sync.RWMutex
-	tree     routingNode
-	index    routingIndex
-	patterns []*pattern  // TODO(jba): remove if possible
-	mux121   serveMux121 // used only when GODEBUG=httpmuxgo121=1
+	mu sync.RWMutex // mu 是一个读写互斥锁，用于保护 ServeMux 的内部数据结构，确保并发访问时的线程安全。
+
+	tree routingNode // tree 是一个路由节点树，用于存储和匹配注册的 URL 模式。它通常是一个前缀树（trie），用于高效地查找与传入请求路径匹配的处理器。
+
+	index routingIndex // index 是一个路由索引，用于优化模式查找，特别是在处理基于主机名的模式时。它可以加速匹配过程。
+
+	patterns []*pattern // patterns 存储所有已注册的模式列表。
+	// patterns stores a list of all registered patterns.
+	// TODO(jba): remove if possible // TODO(jba): 如果可能的话，移除此字段，因为它可能在新的路由实现中不再需要。
+	// TODO(jba): remove if possible // TODO(jba): Remove this field if possible, as it might not be needed in the new routing implementation.
+
+	mux121 serveMux121 // mux121 是一个内部字段，仅当 GODEBUG 环境变量设置为 "httpmuxgo121=1" 时使用。它提供了 Go 1.21 版本的 ServeMux 行为，用于向后兼容。
 }
 
 // NewServeMux allocates and returns a new [ServeMux].
@@ -2521,24 +2614,38 @@ var DefaultServeMux = &defaultServeMux
 var defaultServeMux ServeMux
 
 // cleanPath returns the canonical path for p, eliminating . and .. elements.
+// cleanPath 函数返回路径 p 的规范形式，它会消除路径中的 "." 和 ".." 元素。
 func cleanPath(p string) string {
+	// If the path is empty, return the root path.
+	// 如果路径为空，则返回根路径 "/"。
 	if p == "" {
 		return "/"
 	}
+	// If the path does not start with a slash, prepend one to make it an absolute path.
+	// 如果路径不是以斜杠开头，则在前面添加一个斜杠，确保路径是绝对路径。
 	if p[0] != '/' {
 		p = "/" + p
 	}
+	// Use path.Clean to remove "." and ".." elements and normalize slashes.
+	// 使用 path.Clean 清理路径，它会移除 "." 和 ".." 元素，并处理多余的斜杠。
 	np := path.Clean(p)
 	// path.Clean removes trailing slash except for root;
+	// path.Clean 函数会移除路径末尾的斜杠，但根路径 "/" 除外。
 	// put the trailing slash back if necessary.
+	// 如果原始路径以斜杠结尾，并且清理后的路径不是根路径，则需要将末尾的斜杠添加回来。
 	if p[len(p)-1] == '/' && np != "/" {
 		// Fast path for common case of p being the string we want:
+		// 针对常见情况的快速路径优化：如果原始路径 p 已经是我们想要的（即 np 加上一个斜杠），则直接使用 p。
 		if len(p) == len(np)+1 && strings.HasPrefix(p, np) {
 			np = p
 		} else {
+			// Otherwise, append a trailing slash to the cleaned path.
+			// 否则，在清理后的路径 np 末尾添加一个斜杠。
 			np += "/"
 		}
 	}
+	// Return the canonicalized path.
+	// 返回处理后的规范路径。
 	return np
 }
 
