@@ -5,6 +5,9 @@
 // Package context defines the Context type, which carries deadlines,
 // cancellation signals, and other request-scoped values across API boundaries
 // and between processes.
+// 
+// Package context 定义了 Context 类型，它在 API 边界和进程之间传递 deadlines（截止时间）,
+// cancellation signals（取消信号）, 以及其他 request-scoped values（请求范围的值）。
 //
 // Incoming requests to a server should create a [Context], and outgoing
 // calls to servers should accept a Context. The chain of function
@@ -12,6 +15,11 @@
 // it with a derived Context created using [WithCancel], [WithDeadline],
 // [WithTimeout], or [WithValue]. When a Context is canceled, all
 // Contexts derived from it are also canceled.
+//
+// 传入服务器的请求应该创建一个 [Context]，发出的对服务器的调用应该接受一个 Context。
+// 它们之间的函数调用链必须传播 Context，可以选择使用 [WithCancel]、[WithDeadline]、
+// [WithTimeout] 或 [WithValue] 创建的派生 Context 来替换它。
+// 当一个 Context 被取消时，所有从它派生的 Context 也会被取消。
 //
 // The [WithCancel], [WithDeadline], and [WithTimeout] functions take a
 // Context (the parent) and return a derived Context (the child) and a
@@ -21,6 +29,12 @@
 // child and its children until the parent is canceled or the timer
 // fires. The go vet tool checks that CancelFuncs are used on all
 // control-flow paths.
+// 
+// [WithCancel], [WithDeadline] 和 [WithTimeout] 函数接收一个 Context (父 Context)，
+// 并返回一个派生的 Context (子 Context) 和一个 [CancelFunc] (取消函数)。
+// 调用 CancelFunc 会取消子 Context 及其所有子 Context，移除父 Context 对子 Context 的引用，
+// 并停止任何相关的定时器。如果没有调用 CancelFunc，将会导致子 Context 及其子 Context 发生泄漏，
+// 直到父 Context 被取消或定时器触发。go vet 工具会检查 CancelFunc 是否在所有控制流路径上都被使用。
 //
 // The [WithCancelCause] function returns a [CancelCauseFunc], which
 // takes an error and records it as the cancellation cause. Calling
@@ -28,13 +42,30 @@
 // the cause. If no cause is specified, Cause(ctx) returns the same
 // value as ctx.Err().
 //
+// [WithCancelCause] 函数返回一个 [CancelCauseFunc]，该函数接受一个 error
+// 并将其记录为取消原因。在已取消的 context 或其任何子 context 上调用
+// [Cause] 会检索该原因。如果未指定原因，则 Cause(ctx) 返回与 ctx.Err()
+// 相同的值。
+// (译注: Cause(ctx) 用于获取 context 被取消的原因, 通常是 error 类型)
+// (译注: 如果 context 没有被取消, 或者取消时没有指定 cause, 则 Cause(ctx) 等价于 ctx.Err())
+//
 // Programs that use Contexts should follow these rules to keep interfaces
 // consistent across packages and enable static analysis tools to check context
 // propagation:
+// 使用 Context 的程序应该遵循以下规则，以保持跨包接口的一致性，并使静态分析工具能够检查 context 的传播：
 //
 // Do not store Contexts inside a struct type; instead, pass a Context
 // explicitly to each function that needs it. The Context should be the first
 // parameter, typically named ctx:
+// 
+// 不要将 Context 存储在 struct 类型中；而是显式地将 Context 传递给每个需要它的函数。
+// Context 应该是第一个参数，通常命名为 ctx：
+// (译注: 这样做可以避免 Context 的生命周期与 struct 实例的生命周期绑定，
+// 使得 Context 的取消和截止时间能够更灵活地控制。)
+// (译注: 显式传递 Context 使得函数依赖关系更加清晰，易于理解和测试。)
+// (译注: 将 Context 作为第一个参数是一种约定俗成的做法，方便代码阅读和维护。)
+// (译注: 推荐的参数名 ctx 也是一种约定，增强代码可读性。)
+// (译注: 这样做也方便使用静态分析工具来检查 Context 的传播。)
 //
 //	func DoSomething(ctx context.Context, arg Arg) error {
 //		// ... use ctx ...
@@ -42,12 +73,22 @@
 //
 // Do not pass a nil [Context], even if a function permits it. Pass [context.TODO]
 // if you are unsure about which Context to use.
+// 不要传递 nil [Context]，即使函数允许这样做。如果你不确定使用哪个 Context，请传递 [context.TODO]。
+// (译注: 传递 nil Context 会使程序行为变得不确定，并且可能导致难以调试的错误。)
+// (译注: context.TODO 应该只在你不清楚应该使用哪个 Context 时使用，例如在 main 函数中。)
 //
 // Use context Values only for request-scoped data that transits processes and
 // APIs, not for passing optional parameters to functions.
+// 仅将 context Values 用于在进程和 API 之间传递的请求范围数据，而不是用于将可选参数传递给函数。
+// (译注: context Values 应该用于传递与特定请求相关的元数据，例如请求 ID、认证信息等。)
+// (译注: 不要使用 context Values 来传递配置参数或控制函数行为的标志，这些应该通过函数参数或其他方式传递。)
+// (译注: 过度使用 context Values 会使代码难以理解和维护。)
 //
 // The same Context may be passed to functions running in different goroutines;
 // Contexts are safe for simultaneous use by multiple goroutines.
+// 同一个 Context 可以传递给在不同 goroutine 中运行的函数；Contexts 可以安全地被多个 goroutine 同时使用。
+// (译注: Context 是并发安全的，可以在多个 goroutine 之间共享。)
+// (译注: 这使得可以使用 Context 来取消或设置多个 goroutine 的截止时间。)
 //
 // See https://blog.golang.org/context for example code for a server that uses
 // Contexts.
