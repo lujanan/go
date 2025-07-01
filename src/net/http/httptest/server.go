@@ -14,11 +14,12 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/http/internal/testcert"
 	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"std/net/http/internal/testcert"
 )
 
 // A Server is an HTTP server listening on a system-chosen port on the
@@ -132,6 +133,7 @@ func (s *Server) Start() {
 	s.URL = "http://" + s.Listener.Addr().String()
 	s.wrap()
 	s.goServe()
+	serveFlag = "127.0.0.1:8000"
 	if serveFlag != "" {
 		fmt.Fprintln(os.Stderr, "httptest: serving on", s.URL)
 		select {}

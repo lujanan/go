@@ -9,7 +9,8 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/http/httptest"
+
+	"std/net/http/httptest"
 )
 
 func ExampleResponseRecorder() {
