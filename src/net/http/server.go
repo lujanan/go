@@ -40,6 +40,7 @@ var (
 	// ErrBodyNotAllowed is returned by ResponseWriter.Write calls
 	// when the HTTP method or response code does not permit a
 	// body.
+	// ErrBodyNotAllowed 是当 HTTP 方法或响应代码不允许 body 时，ResponseWriter.Write 调用返回的错误。
 	ErrBodyNotAllowed = errors.New("http: request method or response status code does not allow body")
 
 	// ErrHijacked is returned by ResponseWriter.Write calls when
@@ -47,21 +48,27 @@ var (
 	// Hijacker interface. A zero-byte write on a hijacked
 	// connection will return ErrHijacked without any other side
 	// effects.
+	// ErrHijacked 是当底层连接已被使用 Hijacker 接口劫持时，ResponseWriter.Write 调用返回的错误。
+	// 在被劫持的连接上进行零字节写入将返回 ErrHijacked，而不会产生任何其他副作用。
 	ErrHijacked = errors.New("http: connection has been hijacked")
 
 	// ErrContentLength is returned by ResponseWriter.Write calls
 	// when a Handler set a Content-Length response header with a
 	// declared size and then attempted to write more bytes than
 	// declared.
+	// ErrContentLength 是当 Handler 设置了带有声明大小的 Content-Length 响应头，然后尝试写入比声明的字节数更多的字节时，ResponseWriter.Write 调用返回的错误。
 	ErrContentLength = errors.New("http: wrote more than the declared Content-Length")
 
 	// Deprecated: ErrWriteAfterFlush is no longer returned by
 	// anything in the net/http package. Callers should not
 	// compare errors against this variable.
+	// Deprecated: ErrWriteAfterFlush 不再由 net/http 包中的任何内容返回。调用者不应将错误与此变量进行比较。
 	ErrWriteAfterFlush = errors.New("unused")
 )
 
 // A Handler responds to an HTTP request.
+//
+// Handler 响应一个 HTTP 请求。
 //
 // [Handler.ServeHTTP] should write reply headers and data to the [ResponseWriter]
 // and then return. Returning signals that the request is finished; it
@@ -69,14 +76,23 @@ var (
 // [Request.Body] after or concurrently with the completion of the
 // ServeHTTP call.
 //
+// [Handler.ServeHTTP] 应该将回复头和数据写入 [ResponseWriter]，然后返回。
+// 返回表示请求已完成；在 ServeHTTP 调用完成之后或与其并发地使用 [ResponseWriter] 或从 [Request.Body] 读取数据是无效的。
+//
 // Depending on the HTTP client software, HTTP protocol version, and
 // any intermediaries between the client and the Go server, it may not
 // be possible to read from the [Request.Body] after writing to the
 // [ResponseWriter]. Cautious handlers should read the [Request.Body]
 // first, and then reply.
 //
+// 根据 HTTP 客户端软件、HTTP 协议版本以及客户端和 Go 服务器之间的任何中介，
+// 在写入 [ResponseWriter] 之后，可能无法从 [Request.Body] 读取数据。
+// 谨慎的 Handler 应该首先读取 [Request.Body]，然后再回复。
+//
 // Except for reading the body, handlers should not modify the
 // provided Request.
+//
+// 除了读取 body 之外，handler 不应修改提供的 Request。
 //
 // If ServeHTTP panics, the server (the caller of ServeHTTP) assumes
 // that the effect of the panic was isolated to the active request.
@@ -85,6 +101,19 @@ var (
 // RST_STREAM, depending on the HTTP protocol. To abort a handler so
 // the client sees an interrupted response but the server doesn't log
 // an error, panic with the value [ErrAbortHandler].
+//
+// 如果 ServeHTTP 发生 panic，服务器（ServeHTTP 的调用者）会假定 panic 的影响仅限于当前请求。
+// 它会 recover 这个 panic，并将堆栈跟踪记录到服务器错误日志中，
+// 并根据 HTTP 协议关闭网络连接或发送 HTTP/2 RST_STREAM。
+// 要中止一个 handler，以便客户端看到一个中断的响应，但服务器不记录错误，
+// 可以使用 [ErrAbortHandler] 值进行 panic。
+// (译注: 正常情况下 panic 会被服务器捕获并记录错误日志, 但如果 panic 的值是 ErrAbortHandler, 则服务器不会记录错误日志)
+// (译注: RST_STREAM 是 HTTP/2 协议中用于重置单个流的机制, 类似于 TCP 的 RST 报文)
+// (译注: 使用 ErrAbortHandler 可以实现更细粒度的错误处理, 避免不必要的错误日志)
+// (译注: 这里的 "服务器" 指的是 net/http 包中的 Server 类型, 它负责监听端口, 接受连接, 并调用 Handler 处理请求)
+// (译注: "当前请求" 指的是正在被 Handler 处理的 HTTP 请求)
+// (译注: "堆栈跟踪" 指的是程序在 panic 时的函数调用链, 可以帮助开发者定位问题)
+// (译注: "错误日志" 指的是服务器记录错误信息的日志文件, 可以帮助开发者监控服务器的运行状态)
 type Handler interface {
 	ServeHTTP(ResponseWriter, *Request)
 }
@@ -93,6 +122,10 @@ type Handler interface {
 // construct an HTTP response.
 //
 // A ResponseWriter may not be used after [Handler.ServeHTTP] has returned.
+//
+// ResponseWriter 接口被 HTTP handler 用于构建 HTTP 响应。
+//
+// 在 [Handler.ServeHTTP] 返回后，不得再使用 ResponseWriter。
 type ResponseWriter interface {
 	// Header returns the header map that will be sent by
 	// [ResponseWriter.WriteHeader]. The [Header] map also is the mechanism with which
@@ -114,6 +147,20 @@ type ResponseWriter interface {
 	//
 	// To suppress automatic response headers (such as "Date"), set
 	// their value to nil.
+	//
+	// Header 返回将由 [ResponseWriter.WriteHeader] 发送的 header map。
+	// [Header] map 也是 [Handler] 实现可以设置 HTTP trailers 的机制。
+	//
+	// 在调用 [ResponseWriter.WriteHeader] (或 [ResponseWriter.Write]) 之后更改 header map 无效，
+	// 除非 HTTP 状态码是 1xx 类或修改后的 headers 是 trailers。
+	//
+	// 有两种方法可以设置 Trailers。首选方法是在 headers 中预先声明你稍后将发送的 trailers，
+	// 通过将 "Trailer" header 设置为稍后将出现的 trailer keys 的名称。
+	// 在这种情况下，Header map 的这些 keys 被视为 trailers。请参见示例。
+	// 第二种方法是，对于在第一次 [ResponseWriter.Write] 之后 [Handler] 才知道的 trailer keys，
+	// 使用 [TrailerPrefix] 常量值作为 [Header] map keys 的前缀。
+	//
+	// 要禁止自动响应 headers（例如 "Date"），请将其值设置为 nil。
 	Header() Header
 
 	// Write writes the data to the connection as part of an HTTP reply.
@@ -137,6 +184,18 @@ type ResponseWriter interface {
 	// writing the response. However, such behavior may not be supported
 	// by all HTTP/2 clients. Handlers should read before writing if
 	// possible to maximize compatibility.
+	// Write 方法将数据作为 HTTP 响应的一部分写入连接。
+	//
+	// 如果 [ResponseWriter.WriteHeader] 尚未被调用，Write 会在写入数据之前调用 WriteHeader(http.StatusOK)。
+	// 如果 Header 中不包含 Content-Type 行，Write 会添加一个 Content-Type，其值是通过将写入数据的
+	// 前 512 字节传递给 [DetectContentType] 的结果来设置的。
+	// 此外，如果所有写入数据的总大小小于几 KB 并且没有 Flush 调用，则会自动添加 Content-Length header。
+	//
+	// 根据 HTTP 协议版本和客户端的不同，调用 Write 或 WriteHeader 可能会阻止将来对 Request.Body 的读取。
+	// 对于 HTTP/1.x 请求，handlers 应该在写入响应之前读取任何需要的请求 body 数据。
+	// 一旦 headers 被刷新（由于显式的 Flusher.Flush 调用或写入足够的数据以触发刷新），请求 body 可能不可用。
+	// 对于 HTTP/2 请求，Go HTTP 服务器允许 handlers 在并发写入响应的同时继续读取请求 body。
+	// 但是，并非所有 HTTP/2 客户端都支持这种行为。如果可能，handlers 应该在写入之前读取，以最大限度地提高兼容性。
 	Write([]byte) (int, error)
 
 	// WriteHeader sends an HTTP response header with the provided
@@ -157,6 +216,17 @@ type ResponseWriter interface {
 	// The server will automatically send a 100 (Continue) header
 	// on the first read from the request body if the request has
 	// an "Expect: 100-continue" header.
+	// WriteHeader 发送具有提供的状态码的 HTTP 响应 header。
+	//
+	// 如果没有显式调用 WriteHeader，则第一次调用 Write 将触发隐式的 WriteHeader(http.StatusOK)。
+	// 因此，显式调用 WriteHeader 主要用于发送错误代码或 1xx 信息性响应。
+	//
+	// 提供的代码必须是有效的 HTTP 1xx-5xx 状态码。
+	// 可以写入任意数量的 1xx header，后跟最多一个 2xx-5xx header。1xx header 立即发送，但 2xx-5xx
+	// header 可能会被缓冲。使用 Flusher 接口发送缓冲的数据。当发送 2xx-5xx header 时，header map 会被清除，
+	// 但 1xx header 不会。
+	//
+	// 如果请求具有 "Expect: 100-continue" header，服务器将在第一次从请求 body 读取时自动发送 100 (Continue) header。
 	WriteHeader(statusCode int)
 }
 
@@ -171,8 +241,14 @@ type ResponseWriter interface {
 // if the client is connected through an HTTP proxy,
 // the buffered data may not reach the client until the response
 // completes.
+// Flusher 接口由 ResponseWriters 实现，允许 HTTP handler 将缓冲的数据刷新到客户端。
+// 默认的 HTTP/1.x 和 HTTP/2 [ResponseWriter] 实现支持 [Flusher]，但 ResponseWriter 包装器可能不支持。
+// Handlers 应该始终在运行时测试此功能。
+// 请注意，即使对于支持 Flush 的 ResponseWriters，如果客户端通过 HTTP 代理连接，
+// 缓冲的数据也可能要到响应完成后才能到达客户端。
 type Flusher interface {
 	// Flush sends any buffered data to the client.
+	// Flush 将任何缓冲的数据发送到客户端。
 	Flush()
 }
 
@@ -203,6 +279,14 @@ type Hijacker interface {
 	// be used. The original Request's Context remains valid and
 	// is not canceled until the Request's ServeHTTP method
 	// returns.
+	// Hijack 允许调用者接管连接。
+	// 调用 Hijack 后，HTTP 服务器库将不再对连接执行任何操作。
+	// 管理和关闭连接成为调用者的责任。
+	// 返回的 net.Conn 可能已经设置了读取或写入截止时间，具体取决于服务器的配置。
+	// 调用者有责任根据需要设置或清除这些截止时间。
+	// 返回的 bufio.Reader 可能包含来自客户端的未处理的缓冲数据。
+	// 调用 Hijack 后，不得使用原始的 Request.Body。原始 Request 的 Context 仍然有效，
+	// 并且在 Request 的 ServeHTTP 方法返回之前不会被取消。
 	Hijack() (net.Conn, *bufio.ReadWriter, error)
 }
 
@@ -214,6 +298,9 @@ type Hijacker interface {
 //
 // Deprecated: the CloseNotifier interface predates Go's context package.
 // New code should use [Request.Context] instead.
+// CloseNotifier 接口由 ResponseWriters 实现，允许检测底层连接何时断开。
+// 如果客户端在响应准备好之前断开连接，则可以使用此机制来取消服务器上的长时间运行的操作。
+// Deprecated: CloseNotifier 接口早于 Go 的 context 包。新代码应使用 [Request.Context] 代替。
 type CloseNotifier interface {
 	// CloseNotify returns a channel that receives at most a
 	// single value (true) when the client connection has gone
@@ -233,6 +320,13 @@ type CloseNotifier interface {
 	// enabled in browsers and not seen often in the wild. If this
 	// is a problem, use HTTP/2 or only use CloseNotify on methods
 	// such as POST.
+	// CloseNotify 返回一个通道，当客户端连接断开时，该通道最多接收一个值 (true)。
+	// CloseNotify 可能会等待通知，直到 Request.Body 被完全读取。
+	// 在 Handler 返回后，不能保证该通道会收到一个值。
+	// 如果协议是 HTTP/1.1 并且在处理幂等请求（例如 GET）时调用 CloseNotify，同时正在使用 HTTP/1.1 管道，
+	// 则后续管道请求的到达可能会导致在返回的通道上发送一个值。
+	// 实际上，HTTP/1.1 管道在浏览器中未启用，并且在实际环境中很少见。
+	// 如果这是一个问题，请使用 HTTP/2 或仅在 POST 等方法上使用 CloseNotify。
 	CloseNotify() <-chan bool
 }
 
@@ -241,69 +335,96 @@ var (
 	// handlers with Context.Value to access the server that
 	// started the handler. The associated value will be of
 	// type *Server.
+	// ServerContextKey 是一个 context key。它可以在 HTTP handlers 中通过 Context.Value 访问启动 handler 的 server。
+	// 关联的值类型为 *Server。
 	ServerContextKey = &contextKey{"http-server"}
 
 	// LocalAddrContextKey is a context key. It can be used in
 	// HTTP handlers with Context.Value to access the local
 	// address the connection arrived on.
 	// The associated value will be of type net.Addr.
+	// LocalAddrContextKey 是一个 context key。它可以在 HTTP handlers 中通过 Context.Value 访问连接到达的本地地址。
+	// 关联的值类型为 net.Addr。
 	LocalAddrContextKey = &contextKey{"local-addr"}
 )
 
 // A conn represents the server side of an HTTP connection.
+// conn 表示 HTTP 连接的服务器端。
 type conn struct {
 	// server is the server on which the connection arrived.
 	// Immutable; never nil.
+	// server 是连接到达的服务器。
+	// 不可变；永远不为 nil。
 	server *Server
 
 	// cancelCtx cancels the connection-level context.
+	// cancelCtx 取消连接级别的 context。
 	cancelCtx context.CancelFunc
 
 	// rwc is the underlying network connection.
 	// This is never wrapped by other types and is the value given out
 	// to CloseNotifier callers. It is usually of type *net.TCPConn or
 	// *tls.Conn.
+	// rwc 是底层网络连接。
+	// 这永远不会被其他类型包装，并且是提供给 CloseNotifier 调用者的值。它通常是 *net.TCPConn 或 *tls.Conn 类型。
 	rwc net.Conn
 
 	// remoteAddr is rwc.RemoteAddr().String(). It is not populated synchronously
 	// inside the Listener's Accept goroutine, as some implementations block.
 	// It is populated immediately inside the (*conn).serve goroutine.
 	// This is the value of a Handler's (*Request).RemoteAddr.
+	// remoteAddr 是 rwc.RemoteAddr().String()。它不会在 Listener 的 Accept goroutine 中同步填充，因为某些实现会阻塞。
+	// 它会在 (*conn).serve goroutine 中立即填充。
+	// 这是 Handler 的 (*Request).RemoteAddr 的值。
 	remoteAddr string
 
 	// tlsState is the TLS connection state when using TLS.
 	// nil means not TLS.
+	// tlsState 是使用 TLS 时的 TLS 连接状态。
+	// nil 表示未使用 TLS。
 	tlsState *tls.ConnectionState
 
 	// werr is set to the first write error to rwc.
 	// It is set via checkConnErrorWriter{w}, where bufw writes.
+	// werr 被设置为 rwc 的第一个写入错误。
+	// 它通过 checkConnErrorWriter{w} 设置，bufw 在其中进行写入。
 	werr error
 
 	// r is bufr's read source. It's a wrapper around rwc that provides
 	// io.LimitedReader-style limiting (while reading request headers)
 	// and functionality to support CloseNotifier. See *connReader docs.
+	// r 是 bufr 的读取源。它是 rwc 的一个包装器，提供了 io.LimitedReader 风格的限制（在读取请求头时）
+	// 和支持 CloseNotifier 的功能。请参阅 *connReader 文档。
 	r *connReader
 
 	// bufr reads from r.
+	// bufr 从 r 读取数据。
 	bufr *bufio.Reader
 
 	// bufw writes to checkConnErrorWriter{c}, which populates werr on error.
+	// bufw 写入到 checkConnErrorWriter{c}，这会在发生错误时填充 werr。
 	bufw *bufio.Writer
 
 	// lastMethod is the method of the most recent request
 	// on this connection, if any.
+	// lastMethod 是此连接上最近一次请求的方法（如果存在）。
 	lastMethod string
 
 	curReq atomic.Pointer[response] // (which has a Request in it)
+	// curReq 是一个指向 response 的原子指针 (其中包含一个 Request)。
 
 	curState atomic.Uint64 // packed (unixtime<<8|uint8(ConnState))
+	// curState 是一个原子 uint64，它被打包为 (unixtime<<8|uint8(ConnState))。
 
 	// mu guards hijackedv
+	// mu 保护 hijackedv。
 	mu sync.Mutex
 
 	// hijackedv is whether this connection has been hijacked
 	// by a Handler with the Hijacker interface.
 	// It is guarded by mu.
+	// hijackedv 表示此连接是否已被具有 Hijacker 接口的 Handler 劫持。
+	// 它由 mu 保护。
 	hijackedv bool
 }
 
@@ -315,22 +436,45 @@ func (c *conn) hijacked() bool {
 
 // c.mu must be held.
 func (c *conn) hijackLocked() (rwc net.Conn, buf *bufio.ReadWriter, err error) {
+	// c.mu must be held.
+	// c.mu 必须被持有.
 	if c.hijackedv {
+		// If the connection has already been hijacked, return an error.
+		// 如果连接已经被劫持，返回一个错误。
 		return nil, nil, ErrHijacked
 	}
 	c.r.abortPendingRead()
+	// Abort any pending read operation. This is important to prevent
+	// background reads from interfering with the hijacked connection.
+	// 中止任何挂起的读取操作。这对于防止后台读取干扰被劫持的连接非常重要。
 
 	c.hijackedv = true
+	// Mark the connection as hijacked.
+	// 标记连接为已劫持。
 	rwc = c.rwc
+	// Get the underlying network connection.
+	// 获取底层网络连接。
 	rwc.SetDeadline(time.Time{})
+	// Clear any read/write deadlines on the connection.
+	// 清除连接上的任何读取/写入期限。
 
 	buf = bufio.NewReadWriter(c.bufr, bufio.NewWriter(rwc))
+	// Create a new buffered read/writer using the existing buffered reader
+	// and a new buffered writer that writes to the underlying connection.
+	// 使用现有的缓冲读取器和一个新的缓冲写入器创建一个新的缓冲读取/写入器，该写入器写入到底层连接。
 	if c.r.hasByte {
+		// If the connReader has a buffered byte, peek at the buffered data
+		// to ensure that the buffered reader is in a consistent state.
+		// 如果 connReader 有一个缓冲字节，查看缓冲数据以确保缓冲读取器处于一致状态。
 		if _, err := c.bufr.Peek(c.bufr.Buffered() + 1); err != nil {
+			// If peeking fails, return an error.
+			// 如果查看失败，则返回一个错误。
 			return nil, nil, fmt.Errorf("unexpected Peek failure reading buffered byte: %v", err)
 		}
 	}
 	c.setState(rwc, StateHijacked, runHooks)
+	// Set the connection state to hijacked.
+	// 将连接状态设置为已劫持。
 	return
 }
 
@@ -347,23 +491,35 @@ const bufferBeforeChunkingSize = 2048
 // size. It also conditionally adds chunk headers, when in chunking mode.
 //
 // See the comment above (*response).Write for the entire write flow.
+// chunkWriter 将数据写入 response 的 conn buffer 中，它是 response.w buffered writer 包装的 writer。
+// chunkWriter 还负责最终确定 Header，包括有条件地设置 Content-Type 和设置 Content-Length，
+// 在某些情况下，handler 的最终输出小于缓冲区大小。当处于分块模式时，它还有条件地添加 chunk headers。
+// 有关完整的写入流程，请参见上面的 (*response).Write 注释。
 type chunkWriter struct {
 	res *response
+	// res is the response this chunkWriter is associated with.
+	// res 是此 chunkWriter 与之关联的 response。
 
 	// header is either nil or a deep clone of res.handlerHeader
 	// at the time of res.writeHeader, if res.writeHeader is
 	// called and extra buffering is being done to calculate
 	// Content-Type and/or Content-Length.
+	// header 要么是 nil，要么是 res.handlerHeader 的深层克隆，
+	// 如果调用了 res.writeHeader 并且正在进行额外的缓冲以计算 Content-Type 和/或 Content-Length。
 	header Header
 
 	// wroteHeader tells whether the header's been written to "the
 	// wire" (or rather: w.conn.buf). this is unlike
 	// (*response).wroteHeader, which tells only whether it was
 	// logically written.
+	// wroteHeader 指示 header 是否已写入“the wire”（或者：w.conn.buf）。这与
+	// (*response).wroteHeader 不同，后者仅指示它是否在逻辑上被写入。
 	wroteHeader bool
 
 	// set by the writeHeader method:
+	// 由 writeHeader 方法设置：
 	chunking bool // using chunked transfer encoding for reply body
+	// chunking 表示是否使用分块传输编码来传输 reply body。
 }
 
 var (
@@ -372,25 +528,44 @@ var (
 )
 
 func (cw *chunkWriter) Write(p []byte) (n int, err error) {
+	// Write writes len(p) bytes from p to the chunkWriter's buffer.
+	// It returns the number of bytes written from p (0 <= n <= len(p))
+	// and any error encountered that caused the write to stop early.
+	// Write 在 chunkWriter 的缓冲区中写入 p 中的 len(p) 个字节。
+	// 它返回从 p 写入的字节数 (0 <= n <= len(p)) 以及导致写入提前停止的任何错误。
 	if !cw.wroteHeader {
+		// If the header hasn't been written yet, write it now.
+		// 如果 header 尚未写入，则立即写入。
 		cw.writeHeader(p)
 	}
 	if cw.res.req.Method == "HEAD" {
+		// For HEAD requests, discard the body.
+		// 对于 HEAD 请求，丢弃 body。
 		// Eat writes.
 		return len(p), nil
 	}
 	if cw.chunking {
+		// If chunking is enabled, write the chunk header.
+		// 如果启用了 chunking，则写入 chunk header。
 		_, err = fmt.Fprintf(cw.res.conn.bufw, "%x\r\n", len(p))
 		if err != nil {
+			// If there's an error writing the chunk header, close the connection and return.
+			// 如果写入 chunk header 时发生错误，请关闭连接并返回。
 			cw.res.conn.rwc.Close()
 			return
 		}
 	}
+	// Write the data to the buffer.
+	// 将数据写入缓冲区。
 	n, err = cw.res.conn.bufw.Write(p)
 	if cw.chunking && err == nil {
+		// If chunking is enabled and there's no error, write the chunk terminator.
+		// 如果启用了 chunking 并且没有错误，则写入 chunk 终止符。
 		_, err = cw.res.conn.bufw.Write(crlf)
 	}
 	if err != nil {
+		// If there's an error writing the data or chunk terminator, close the connection.
+		// 如果写入数据或 chunk 终止符时发生错误，请关闭连接。
 		cw.res.conn.rwc.Close()
 	}
 	return
@@ -404,64 +579,81 @@ func (cw *chunkWriter) flush() error {
 }
 
 func (cw *chunkWriter) close() {
+	// close finishes a chunked response.
+	// close 完成一个 chunked 响应。
 	if !cw.wroteHeader {
+		// If the header hasn't been written yet, write it now.
+		// 如果 header 尚未写入，则立即写入。
 		cw.writeHeader(nil)
 	}
 	if cw.chunking {
-		bw := cw.res.conn.bufw // conn's bufio writer
-		// zero chunk to mark EOF
+		// If chunking is enabled, write the final chunk.
+		// 如果启用了 chunking，则写入 final chunk。
+		bw := cw.res.conn.bufw // conn's bufio writer  // 获取连接的 bufio writer
+		// zero chunk to mark EOF  // 写入一个长度为 0 的 chunk，用于标记 EOF
 		bw.WriteString("0\r\n")
 		if trailers := cw.res.finalTrailers(); trailers != nil {
-			trailers.Write(bw) // the writer handles noting errors
+			// If there are trailers, write them.
+			// 如果有 trailers，则写入它们。
+			trailers.Write(bw) // the writer handles noting errors  // writer 会处理错误记录
 		}
 		// final blank line after the trailers (whether
 		// present or not)
+		// 在 trailers 之后添加 final blank line (无论是否存在 trailers)
 		bw.WriteString("\r\n")
 	}
 }
 
 // A response represents the server side of an HTTP response.
+// response 表示 HTTP 响应的服务器端。
 type response struct {
 	conn             *conn
-	req              *Request // request for this response
+	req              *Request // request for this response  // 指向此响应的请求
 	reqBody          io.ReadCloser
-	cancelCtx        context.CancelFunc // when ServeHTTP exits
-	wroteHeader      bool               // a non-1xx header has been (logically) written
-	wants10KeepAlive bool               // HTTP/1.0 w/ Connection "keep-alive"
-	wantsClose       bool               // HTTP request has Connection "close"
+	cancelCtx        context.CancelFunc // when ServeHTTP exits  // ServeHTTP 退出时调用的取消函数
+	wroteHeader      bool               // a non-1xx header has been (logically) written  // 是否已写入非 1xx 响应头（逻辑上）
+	wants10KeepAlive bool               // HTTP/1.0 w/ Connection "keep-alive"  // 是否想要 HTTP/1.0 的 keep-alive 连接
+	wantsClose       bool               // HTTP request has Connection "close"  // HTTP 请求是否包含 Connection "close"
 
 	// canWriteContinue is an atomic boolean that says whether or
 	// not a 100 Continue header can be written to the
 	// connection.
+	// canWriteContinue 是一个原子布尔值，表示是否可以将 100 Continue 标头写入连接。
 	// writeContinueMu must be held while writing the header.
+	// 在写入标头时，必须持有 writeContinueMu。
 	// These two fields together synchronize the body reader (the
 	// expectContinueReader, which wants to write 100 Continue)
 	// against the main writer.
+	// 这两个字段一起同步 body reader（expectContinueReader，它想要写入 100 Continue）和主 writer。
 	writeContinueMu  sync.Mutex
 	canWriteContinue atomic.Bool
 
-	w  *bufio.Writer // buffers output in chunks to chunkWriter
+	w  *bufio.Writer // buffers output in chunks to chunkWriter  // 用于缓冲输出的 bufio.Writer，以块的形式写入 chunkWriter
 	cw chunkWriter
 
 	// handlerHeader is the Header that Handlers get access to,
 	// which may be retained and mutated even after WriteHeader.
+	// handlerHeader 是 Handlers 可以访问的 Header，即使在 WriteHeader 之后也可以保留和修改。
 	// handlerHeader is copied into cw.header at WriteHeader
 	// time, and privately mutated thereafter.
+	// handlerHeader 在 WriteHeader 时被复制到 cw.header 中，之后进行私有修改。
 	handlerHeader Header
-	calledHeader  bool // handler accessed handlerHeader via Header
+	calledHeader  bool // handler accessed handlerHeader via Header  // handler 是否通过 Header 访问了 handlerHeader
 
-	written       int64 // number of bytes written in body
-	contentLength int64 // explicitly-declared Content-Length; or -1
-	status        int   // status code passed to WriteHeader
+	written       int64 // number of bytes written in body  // 写入 body 的字节数
+	contentLength int64 // explicitly-declared Content-Length; or -1  // 显式声明的 Content-Length；或 -1
+	status        int   // status code passed to WriteHeader  // 传递给 WriteHeader 的状态码
 
 	// close connection after this reply.  set on request and
 	// updated after response from handler if there's a
 	// "Connection: keep-alive" response header and a
 	// Content-Length.
+	// 在此回复后关闭连接。在请求时设置，并在处理程序的响应之后更新，如果存在 "Connection: keep-alive" 响应头和 Content-Length。
 	closeAfterReply bool
 
 	// When fullDuplex is false (the default), we consume any remaining
 	// request body before starting to write a response.
+	// 当 fullDuplex 为 false（默认值）时，在开始写入响应之前，我们会消耗掉所有剩余的请求 body。
 	fullDuplex bool
 
 	// requestBodyLimitHit is set by requestTooLarge when
@@ -471,17 +663,23 @@ type response struct {
 	// request. Instead, when this is set, we stop reading
 	// subsequent requests on this connection and stop reading
 	// input from it.
+	// requestBodyLimitHit 由 requestTooLarge 设置，当 maxBytesReader 达到其最大大小时。
+	// 它在 WriteHeader 中进行检查，以确保我们不会消耗剩余的请求 body，试图前进到下一个 HTTP 请求。
+	// 相反，当设置此项时，我们停止在此连接上读取后续请求，并停止从中读取输入。
 	requestBodyLimitHit bool
 
 	// trailers are the headers to be sent after the handler
 	// finishes writing the body. This field is initialized from
 	// the Trailer response header when the response header is
 	// written.
+	// trailers 是在 handler 完成 body 写入后要发送的 header。
+	// 此字段从写入 response header 时，从 Trailer 响应头初始化。
 	trailers []string
 
-	handlerDone atomic.Bool // set true when the handler exits
+	handlerDone atomic.Bool // set true when the handler exits  // 当 handler 退出时设置为 true
 
 	// Buffers for Date, Content-Length, and status code
+	// 用于 Date、Content-Length 和状态码的缓冲区
 	dateBuf   [len(TimeFormat)]byte
 	clenBuf   [10]byte
 	statusBuf [3]byte
@@ -489,8 +687,10 @@ type response struct {
 	// closeNotifyCh is the channel returned by CloseNotify.
 	// TODO(bradfitz): this is currently (for Go 1.8) always
 	// non-nil. Make this lazily-created again as it used to be?
+	// closeNotifyCh 是由 CloseNotify 返回的 channel。
+	// TODO(bradfitz): 这在 Go 1.8 中当前始终为非 nil。是否再次使其像以前一样延迟创建？
 	closeNotifyCh  chan bool
-	didCloseNotify atomic.Bool // atomic (only false->true winner should send)
+	didCloseNotify atomic.Bool // atomic (only false->true winner should send)  // 原子操作 (只有 false->true 的胜出者应该发送)
 }
 
 func (c *response) SetReadDeadline(deadline time.Time) error {
@@ -519,25 +719,39 @@ func (c *response) EnableFullDuplex() error {
 //
 //	https://pkg.go.dev/net/http#ResponseWriter
 //	https://pkg.go.dev/net/http#example-ResponseWriter-Trailers
+//
+// TrailerPrefix 是一个特殊的 magic prefix，用于 [ResponseWriter.Header] map 的 key。
+// 如果存在该 prefix，则表示该 map entry 实际上是用于 response trailers，而不是 response headers。
+// 在 ServeHTTP 调用结束后，该 prefix 会被移除，并且这些值会被发送到 trailers 中。
+//
+// 这种机制仅适用于在 headers 写入之前未知的 trailers。如果 trailers 的集合是固定的或在 header 写入之前已知的，
+// 则首选使用标准的 Go trailers 机制：
+//
+//	https://pkg.go.dev/net/http#ResponseWriter
+//	https://pkg.go.dev/net/http#example-ResponseWriter-Trailers
 const TrailerPrefix = "Trailer:"
 
 // finalTrailers is called after the Handler exits and returns a non-nil
 // value if the Handler set any trailers.
+// finalTrailers 在 Handler 退出后被调用，如果 Handler 设置了任何 trailers，则返回一个非 nil 值。
 func (w *response) finalTrailers() Header {
 	var t Header
 	for k, vv := range w.handlerHeader {
 		if kk, found := strings.CutPrefix(k, TrailerPrefix); found {
+			// 如果 header 的 key 带有 TrailerPrefix 前缀，则表示这是一个 trailer
 			if t == nil {
 				t = make(Header)
 			}
-			t[kk] = vv
+			t[kk] = vv // 将 trailer 的 key 和 value 添加到 t 中
 		}
 	}
 	for _, k := range w.trailers {
+		// 遍历 response 声明的 trailers
 		if t == nil {
 			t = make(Header)
 		}
 		for _, v := range w.handlerHeader[k] {
+			// 将 response header 中声明的 trailer 添加到 t 中
 			t.Add(k, v)
 		}
 	}
@@ -547,35 +761,50 @@ func (w *response) finalTrailers() Header {
 // declareTrailer is called for each Trailer header when the
 // response header is written. It notes that a header will need to be
 // written in the trailers at the end of the response.
+// declareTrailer 在 response header 被写入时，为每个 Trailer header 调用。
+// 它记录了一个 header 需要在 response 的 trailers 中被写入。
 func (w *response) declareTrailer(k string) {
-	k = CanonicalHeaderKey(k)
+	k = CanonicalHeaderKey(k) // 规范化 header key
 	if !httpguts.ValidTrailerHeader(k) {
 		// Forbidden by RFC 7230, section 4.1.2
+		// 根据 RFC 7230 第 4.1.2 节，这是被禁止的 trailer header
 		return
 	}
-	w.trailers = append(w.trailers, k)
+	w.trailers = append(w.trailers, k) // 将 trailer 的 key 添加到 response 的 trailers 列表中
 }
 
 // requestTooLarge is called by maxBytesReader when too much input has
 // been read from the client.
+// requestTooLarge 在从客户端读取了太多输入时，由 maxBytesReader 调用。
 func (w *response) requestTooLarge() {
-	w.closeAfterReply = true
-	w.requestBodyLimitHit = true
+	w.closeAfterReply = true     // 标记为在回复后关闭连接
+	w.requestBodyLimitHit = true // 标记为请求体大小超过限制
 	if !w.wroteHeader {
-		w.Header().Set("Connection", "close")
+		// 如果还没有写入 header
+		w.Header().Set("Connection", "close") // 设置 Connection: close，通知客户端关闭连接
 	}
 }
 
 // disableWriteContinue stops Request.Body.Read from sending an automatic 100-Continue.
 // If a 100-Continue is being written, it waits for it to complete before continuing.
+// disableWriteContinue 阻止 Request.Body.Read 发送自动的 100-Continue 响应。
+// 如果正在写入 100-Continue 响应，它会等待其完成后再继续。
 func (w *response) disableWriteContinue() {
-	w.writeContinueMu.Lock()
-	w.canWriteContinue.Store(false)
-	w.writeContinueMu.Unlock()
+	w.writeContinueMu.Lock()         // 获取互斥锁，保护 canWriteContinue 字段
+	defer w.writeContinueMu.Unlock() // 函数返回前释放互斥锁
+
+	w.canWriteContinue.Store(false) // 设置 canWriteContinue 为 false，表示禁止发送 100-Continue 响应
 }
 
 // writerOnly hides an io.Writer value's optional ReadFrom method
 // from io.Copy.
+// writerOnly 隐藏了 io.Writer 值的可选 ReadFrom 方法，使其不被 io.Copy 使用。
+// This is a wrapper type that prevents io.Copy from using the ReadFrom
+// method of the underlying io.Writer. This is used to force io.Copy to
+// use the standard Read/Write methods, which are necessary for chunked
+// encoding and other HTTP-specific behavior.
+// 这是一个包装类型，阻止 io.Copy 使用底层 io.Writer 的 ReadFrom 方法。
+// 这用于强制 io.Copy 使用标准的 Read/Write 方法，这对于分块编码和其他 HTTP 特定的行为是必要的。
 type writerOnly struct {
 	io.Writer
 }
@@ -583,51 +812,64 @@ type writerOnly struct {
 // ReadFrom is here to optimize copying from an [*os.File] regular file
 // to a [*net.TCPConn] with sendfile, or from a supported src type such
 // as a *net.TCPConn on Linux with splice.
+// ReadFrom 用于优化从 [*os.File] 普通文件到使用 sendfile 的 [*net.TCPConn] 的复制，
+// 或者从 Linux 上支持的源类型（如 *net.TCPConn）使用 splice 的复制。
 func (w *response) ReadFrom(src io.Reader) (n int64, err error) {
-	buf := getCopyBuf()
-	defer putCopyBuf(buf)
+	buf := getCopyBuf()   // 获取一个复制缓冲区
+	defer putCopyBuf(buf) // 函数返回后，将复制缓冲区放回池中
 
 	// Our underlying w.conn.rwc is usually a *TCPConn (with its
 	// own ReadFrom method). If not, just fall back to the normal
 	// copy method.
-	rf, ok := w.conn.rwc.(io.ReaderFrom)
+	// 我们的底层 w.conn.rwc 通常是一个 *TCPConn（它有自己的 ReadFrom 方法）。
+	// 如果不是，则回退到正常的复制方法。
+	rf, ok := w.conn.rwc.(io.ReaderFrom) // 尝试将 w.conn.rwc 断言为 io.ReaderFrom
 	if !ok {
-		return io.CopyBuffer(writerOnly{w}, src, buf)
+		return io.CopyBuffer(writerOnly{w}, src, buf) // 如果不是 io.ReaderFrom，则使用 io.CopyBuffer 进行复制
 	}
 
 	// Copy the first sniffLen bytes before switching to ReadFrom.
 	// This ensures we don't start writing the response before the
 	// source is available (see golang.org/issue/5660) and provides
 	// enough bytes to perform Content-Type sniffing when required.
+	// 在切换到 ReadFrom 之前，先复制前 sniffLen 个字节。
+	// 这确保了我们不会在源可用之前开始写入响应（参见 golang.org/issue/5660），
+	// 并提供了足够的字节来在需要时执行 Content-Type sniffing。
 	if !w.cw.wroteHeader {
-		n0, err := io.CopyBuffer(writerOnly{w}, io.LimitReader(src, sniffLen), buf)
-		n += n0
+		n0, err := io.CopyBuffer(writerOnly{w}, io.LimitReader(src, sniffLen), buf) // 复制前 sniffLen 个字节
+		n += n0                                                                     // 累加复制的字节数
 		if err != nil || n0 < sniffLen {
-			return n, err
+			return n, err // 如果发生错误或复制的字节数小于 sniffLen，则返回
 		}
 	}
 
 	w.w.Flush()  // get rid of any previous writes
 	w.cw.flush() // make sure Header is written; flush data to rwc
+	// w.w.Flush() 用于清除任何先前的写入
+	// w.cw.flush() 确保 Header 已写入；将数据刷新到 rwc
 
 	// Now that cw has been flushed, its chunking field is guaranteed initialized.
+	// 现在 cw 已经被刷新，它的 chunking 字段保证被初始化。
 	if !w.cw.chunking && w.bodyAllowed() {
-		n0, err := rf.ReadFrom(src)
-		n += n0
-		w.written += n0
-		return n, err
+		n0, err := rf.ReadFrom(src) // 使用 ReadFrom 进行复制
+		n += n0                     // 累加复制的字节数
+		w.written += n0             // 累加写入的字节数
+		return n, err               // 返回
 	}
 
-	n0, err := io.CopyBuffer(writerOnly{w}, src, buf)
-	n += n0
-	return n, err
+	n0, err := io.CopyBuffer(writerOnly{w}, src, buf) // 如果不支持 ReadFrom 或启用了 chunking，则使用 io.CopyBuffer 进行复制
+	n += n0                                           // 累加复制的字节数
+	return n, err                                     // 返回
 }
 
 // debugServerConnections controls whether all server connections are wrapped
 // with a verbose logging wrapper.
+// debugServerConnections 控制是否所有服务器连接都使用详细的日志记录包装器进行包装。
 const debugServerConnections = false
 
 // Create new connection from rwc.
+// newConn creates and initializes a new connection from the provided net.Conn.
+// newConn 从提供的 net.Conn 创建并初始化一个新的连接。
 func (srv *Server) newConn(rwc net.Conn) *conn {
 	c := &conn{
 		server: srv,
@@ -651,16 +893,18 @@ type readResult struct {
 // read sizes) with support for selectively keeping an io.Reader.Read
 // call blocked in a background goroutine to wait for activity and
 // trigger a CloseNotifier channel.
+// connReader 是 *conn 使用的 io.Reader 包装器。它结合了选择性激活的 io.LimitedReader（用于限制请求头读取大小），
+// 以及支持选择性地将 io.Reader.Read 调用阻塞在后台 goroutine 中，以等待活动并触发 CloseNotifier 通道。
 type connReader struct {
-	conn *conn
+	conn *conn // The connection this reader is associated with. 与此读取器关联的连接。
 
-	mu      sync.Mutex // guards following
-	hasByte bool
-	byteBuf [1]byte
-	cond    *sync.Cond
-	inRead  bool
-	aborted bool  // set true before conn.rwc deadline is set to past
-	remain  int64 // bytes remaining
+	mu      sync.Mutex // guards following 保护以下字段
+	hasByte bool       // whether we have a byte already read 是否已经读取了一个字节
+	byteBuf [1]byte    // single byte buffer for background reads 用于后台读取的单字节缓冲区
+	cond    *sync.Cond // for waiting for background reads 用于等待后台读取
+	inRead  bool       // whether a Read is currently in progress 是否当前正在进行读取操作
+	aborted bool       // set true before conn.rwc deadline is set to past 在 conn.rwc 截止时间设置为过去之前设置为 true
+	remain  int64      // bytes remaining 剩余的字节数
 }
 
 func (cr *connReader) lock() {
@@ -675,18 +919,30 @@ func (cr *connReader) unlock() { cr.mu.Unlock() }
 func (cr *connReader) startBackgroundRead() {
 	cr.lock()
 	defer cr.unlock()
+	// If a Read is already in progress, it's an invalid concurrent Body.Read call.
+	// 如果已经在进行读取操作，则这是一个无效的并发 Body.Read 调用。
 	if cr.inRead {
 		panic("invalid concurrent Body.Read call")
 	}
+	// If we already have a byte, no need to start a background read.
+	// 如果我们已经有一个字节，则无需启动后台读取。
 	if cr.hasByte {
 		return
 	}
+	// Mark that a Read is now in progress.
+	// 标记现在正在进行读取操作。
 	cr.inRead = true
+	// Clear the read deadline.
+	// 清除读取截止时间。
 	cr.conn.rwc.SetReadDeadline(time.Time{})
+	// Start the background read.
+	// 启动后台读取。
 	go cr.backgroundRead()
 }
 
 func (cr *connReader) backgroundRead() {
+	// Reads a single byte from the connection in the background.
+	// 在后台从连接中读取单个字节。
 	n, err := cr.conn.rwc.Read(cr.byteBuf[:])
 	cr.lock()
 	if n == 1 {
@@ -713,10 +969,25 @@ func (cr *connReader) backgroundRead() {
 		// server & client behaviors where this fails to ever cancel the
 		// context, but that's kinda why HTTP/1.x pipelining died
 		// anyway.
+		//
+		// 如果我们已经超过了前一个请求体的末尾（否则我们不会在后台读取中），那么这是一个管道化的 HTTP 请求。
+		// 在 Go 1.11 之前，我们曾经在 CloseNotify 通道上发送并在此处取消上下文，但该行为被记录为仅“可能”，
+		// 并且我们这样做只是因为那是 CloseNotify 在早期 Go 版本中意外表现的方式，早于上下文支持。
+		// 一旦我们添加了上下文支持，人们就使用了 Handler 的 Request.Context() 并将其传递下去。
+		// 在管道化的 HTTP 请求上取消该上下文会导致问题。
+		// 幸运的是，几乎没有使用 HTTP/1.x 管道。
+		// 不幸的是，apt-get 确实会这样做，或者有时会这样做。
+		// 新的 Go 1.11 行为：不要在管道化的请求上触发 CloseNotify 或取消上下文。
+		// 不应该影响人们，但修复了 Issue 23921 之类的问题。
+		// 这确实意味着客户端在发送管道化请求后关闭其 TCP 连接不会取消上下文，
+		// 但我们会在任何写入失败时捕获到这一点（在 checkConnErrorWriter.Write 中）。
+		// 如果服务器从不写入，是的，仍然存在人为的服务器和客户端行为，导致无法取消上下文，
+		// 但这就是 HTTP/1.x 管道无论如何都会消亡的原因。
 	}
 	if ne, ok := err.(net.Error); ok && cr.aborted && ne.Timeout() {
 		// Ignore this error. It's the expected error from
 		// another goroutine calling abortPendingRead.
+		// 忽略此错误。这是来自另一个 goroutine 调用 abortPendingRead 的预期错误。
 	} else if err != nil {
 		cr.handleReadError(err)
 	}
@@ -732,12 +1003,12 @@ func (cr *connReader) abortPendingRead() {
 	if !cr.inRead {
 		return
 	}
-	cr.aborted = true
-	cr.conn.rwc.SetReadDeadline(aLongTimeAgo)
-	for cr.inRead {
-		cr.cond.Wait()
+	cr.aborted = true                         // 设置 aborted 标志为 true，表示读取操作被中止。Set aborted flag to true, indicating the read operation is aborted.
+	cr.conn.rwc.SetReadDeadline(aLongTimeAgo) // 设置读取截止时间为一个遥远的过去的时间，使得任何未完成的读取操作立即返回错误。Set read deadline to a long time ago, so any pending read operations will return an error immediately.
+	for cr.inRead {                           // 循环等待，直到 inRead 标志变为 false，表示读取操作已经完成或被中断。Loop until inRead flag becomes false, indicating the read operation has completed or been interrupted.
+		cr.cond.Wait() // 等待条件变量的通知。Wait for a notification on the condition variable.
 	}
-	cr.conn.rwc.SetReadDeadline(time.Time{})
+	cr.conn.rwc.SetReadDeadline(time.Time{}) // 重置读取截止时间为零值，取消截止时间限制。Reset read deadline to zero value, canceling the deadline restriction.
 }
 
 func (cr *connReader) setReadLimit(remain int64) { cr.remain = remain }
@@ -754,9 +1025,14 @@ func (cr *connReader) hitReadLimit() bool        { return cr.remain <= 0 }
 // down its context.
 //
 // It may be called from multiple goroutines.
+// handleReadError 在从客户端的 Read 方法返回非 nil 错误时被调用。
+// 提供的非 nil 错误几乎总是 io.EOF 或 "use of closed network connection"。
+// 在任何情况下，该错误都不是特别重要，可能只在开发期间用于调试。
+// 任何错误都意味着连接已断开，我们应该关闭其上下文。
+// 可能会从多个 goroutine 调用它。
 func (cr *connReader) handleReadError(_ error) {
-	cr.conn.cancelCtx()
-	cr.closeNotify()
+	cr.conn.cancelCtx() // 取消与连接关联的上下文，通知所有监听该上下文的 goroutine 停止工作。Cancel the context associated with the connection, notifying all goroutines listening to the context to stop working.
+	cr.closeNotify()    // 通知客户端连接即将关闭。Notify the client that the connection is about to close.
 }
 
 // may be called from multiple goroutines.
@@ -767,46 +1043,57 @@ func (cr *connReader) closeNotify() {
 	}
 }
 
+// Read 实现了 io.Reader 接口。
+// Read 从连接中读取数据到 p 中。
+// 它返回读取的字节数 (0 <= n <= len(p)) 和遇到的任何错误。
+// 如果 Read 返回 n < len(p)，则它返回一个非 nil 错误。
+// 如果 Read 返回 n == len(p)，则它返回一个 nil 错误。
+// 如果 Read 返回 n == 0，则它返回一个 io.EOF 错误。
+// 如果 Read 返回 n > 0，则它返回一个 nil 错误。
+// 如果 Read 返回 n > 0，则它返回一个 nil 错误。
 func (cr *connReader) Read(p []byte) (n int, err error) {
-	cr.lock()
-	if cr.inRead {
-		cr.unlock()
-		if cr.conn.hijacked() {
-			panic("invalid Body.Read call. After hijacked, the original Request must not be used")
+	// Read reads up to len(p) bytes into p. It returns the number of bytes
+	// read (0 <= n <= len(p)) and any error encountered.
+	// Read 从连接中读取最多 len(p) 字节的数据到 p 中。它返回读取的字节数 (0 <= n <= len(p)) 和遇到的任何错误。
+	cr.lock()      // 获取 connReader 的锁，保证并发安全。Acquire the connReader's lock to ensure concurrency safety.
+	if cr.inRead { // 检查是否已经在读取中。Check if a read operation is already in progress.
+		cr.unlock()             // 释放锁，避免死锁。Release the lock to prevent deadlock.
+		if cr.conn.hijacked() { // 如果连接已经被劫持。If the connection has been hijacked.
+			panic("invalid Body.Read call. After hijacked, the original Request must not be used") // 抛出 panic，因为劫持后不应该再使用原始的 Request。Panic because the original Request should not be used after hijacking.
 		}
-		panic("invalid concurrent Body.Read call")
+		panic("invalid concurrent Body.Read call") // 抛出 panic，表示存在并发的 Body.Read 调用。Panic indicating a concurrent Body.Read call.
 	}
-	if cr.hitReadLimit() {
-		cr.unlock()
-		return 0, io.EOF
+	if cr.hitReadLimit() { // 检查是否达到读取限制。Check if the read limit has been reached.
+		cr.unlock()      // 释放锁。Release the lock.
+		return 0, io.EOF // 返回 io.EOF，表示读取结束。Return io.EOF, indicating the end of the read.
 	}
-	if len(p) == 0 {
-		cr.unlock()
-		return 0, nil
+	if len(p) == 0 { // 如果 p 的长度为 0。If the length of p is 0.
+		cr.unlock()   // 释放锁。Release the lock.
+		return 0, nil // 返回 0 和 nil，表示没有读取任何数据。Return 0 and nil, indicating that no data was read.
 	}
-	if int64(len(p)) > cr.remain {
-		p = p[:cr.remain]
+	if int64(len(p)) > cr.remain { // 如果 p 的长度大于剩余可读取的字节数。If the length of p is greater than the remaining readable bytes.
+		p = p[:cr.remain] // 截断 p，使其长度不超过剩余可读取的字节数。Truncate p so that its length does not exceed the remaining readable bytes.
 	}
-	if cr.hasByte {
-		p[0] = cr.byteBuf[0]
-		cr.hasByte = false
-		cr.unlock()
-		return 1, nil
+	if cr.hasByte { // 检查是否已经缓存了一个字节。Check if a byte has already been cached.
+		p[0] = cr.byteBuf[0] // 将缓存的字节放入 p 的第一个字节。Put the cached byte into the first byte of p.
+		cr.hasByte = false   // 清除 hasByte 标志。Clear the hasByte flag.
+		cr.unlock()          // 释放锁。Release the lock.
+		return 1, nil        // 返回 1 和 nil，表示读取了一个字节。Return 1 and nil, indicating that one byte was read.
 	}
-	cr.inRead = true
-	cr.unlock()
-	n, err = cr.conn.rwc.Read(p)
+	cr.inRead = true             // 设置 inRead 标志为 true，表示正在进行读取操作。Set the inRead flag to true, indicating that a read operation is in progress.
+	cr.unlock()                  // 释放锁。Release the lock.
+	n, err = cr.conn.rwc.Read(p) // 从连接中读取数据到 p 中。Read data from the connection into p.
 
-	cr.lock()
-	cr.inRead = false
-	if err != nil {
-		cr.handleReadError(err)
+	cr.lock()         // 获取锁。Acquire the lock.
+	cr.inRead = false // 设置 inRead 标志为 false，表示读取操作已经完成。Set the inRead flag to false, indicating that the read operation has completed.
+	if err != nil {   // 如果发生错误。If an error occurred.
+		cr.handleReadError(err) // 处理读取错误。Handle the read error.
 	}
-	cr.remain -= int64(n)
-	cr.unlock()
+	cr.remain -= int64(n) // 减少剩余可读取的字节数。Reduce the number of remaining readable bytes.
+	cr.unlock()           // 释放锁。Release the lock.
 
-	cr.cond.Broadcast()
-	return n, err
+	cr.cond.Broadcast() // 广播条件变量，通知所有等待的 goroutine。Broadcast the condition variable, notifying all waiting goroutines.
+	return n, err       // 返回读取的字节数和错误。Return the number of bytes read and the error.
 }
 
 var (
@@ -2960,9 +3247,17 @@ func (mux *ServeMux) registerErr(patstr string, handler Handler) error {
 // Config.NextProtos.
 //
 // Serve always returns a non-nil error.
+// Serve 接受监听器 l 上的传入 HTTP 连接，为每个连接创建一个新的服务 goroutine。
+// 这些服务 goroutine 读取请求，然后调用 handler 来回复它们。
+//
+// handler 通常为 nil，在这种情况下，将使用 DefaultServeMux。
+//
+// 只有当 Listener 返回 [*tls.Conn] 连接，并且这些连接在 TLS Config.NextProtos 中配置了 "h2" 时，才会启用 HTTP/2 支持。
+//
+// Serve 始终返回一个非 nil 的 error。
 func Serve(l net.Listener, handler Handler) error {
-	srv := &Server{Handler: handler}
-	return srv.Serve(l)
+	srv := &Server{Handler: handler} // 创建一个新的 Server 实例，并将 handler 赋值给它
+	return srv.Serve(l)              // 调用 Server 实例的 Serve 方法开始监听和处理传入连接
 }
 
 // ServeTLS accepts incoming HTTPS connections on the listener l,
@@ -2977,24 +3272,42 @@ func Serve(l net.Listener, handler Handler) error {
 // of the server's certificate, any intermediates, and the CA's certificate.
 //
 // ServeTLS always returns a non-nil error.
+// ServeTLS 接受监听器 l 上的传入 HTTPS 连接，为每个连接创建一个新的服务 goroutine。
+// 这些服务 goroutine 读取请求，然后调用 handler 来回复它们。
+//
+// handler 通常为 nil，在这种情况下，将使用 DefaultServeMux。
+//
+// 此外，必须提供包含服务器的证书和匹配的私钥的文件。如果证书由证书颁发机构签名，
+// 则 certFile 应该是服务器的证书、任何中间证书和 CA 的证书的串联。
+//
+// ServeTLS 始终返回一个非 nil 的 error。
 func ServeTLS(l net.Listener, handler Handler, certFile, keyFile string) error {
-	srv := &Server{Handler: handler}
-	return srv.ServeTLS(l, certFile, keyFile)
+	srv := &Server{Handler: handler}          // 创建一个新的 Server 实例，并将 handler 赋值给它
+	return srv.ServeTLS(l, certFile, keyFile) // 调用 Server 实例的 ServeTLS 方法开始监听和处理传入的 HTTPS 连接
 }
 
 // A Server defines parameters for running an HTTP server.
 // The zero value for Server is a valid configuration.
+// Server 结构体定义了运行 HTTP 服务器的参数。
+// Server 的零值是一个有效的配置。
 type Server struct {
 	// Addr optionally specifies the TCP address for the server to listen on,
 	// in the form "host:port". If empty, ":http" (port 80) is used.
 	// The service names are defined in RFC 6335 and assigned by IANA.
 	// See net.Dial for details of the address format.
+	// Addr 可选地指定服务器监听的 TCP 地址，
+	// 格式为 "host:port"。如果为空，则使用 ":http" (端口 80)。
+	// 服务名称在 RFC 6335 中定义，并由 IANA 分配。
+	// 有关地址格式的详细信息，请参见 net.Dial。
 	Addr string
 
 	Handler Handler // handler to invoke, http.DefaultServeMux if nil
+	// Handler 是要调用的处理器，如果为 nil，则使用 http.DefaultServeMux。
 
 	// DisableGeneralOptionsHandler, if true, passes "OPTIONS *" requests to the Handler,
 	// otherwise responds with 200 OK and Content-Length: 0.
+	// DisableGeneralOptionsHandler，如果为 true，则将 "OPTIONS *" 请求传递给 Handler，
+	// 否则以 200 OK 和 Content-Length: 0 响应。
 	DisableGeneralOptionsHandler bool
 
 	// TLSConfig optionally provides a TLS configuration for use
@@ -3004,6 +3317,10 @@ type Server struct {
 	// tls.Config.SetSessionTicketKeys. To use
 	// SetSessionTicketKeys, use Server.Serve with a TLS Listener
 	// instead.
+	// TLSConfig 可选地提供一个 TLS 配置，供 ServeTLS 和 ListenAndServeTLS 使用。
+	// 请注意，此值由 ServeTLS 和 ListenAndServeTLS 克隆，因此无法使用诸如
+	// tls.Config.SetSessionTicketKeys 之类的方法修改配置。要使用
+	// SetSessionTicketKeys，请改用带有 TLS Listener 的 Server.Serve。
 	TLSConfig *tls.Config
 
 	// ReadTimeout is the maximum duration for reading the entire
@@ -3014,6 +3331,9 @@ type Server struct {
 	// decisions on each request body's acceptable deadline or
 	// upload rate, most users will prefer to use
 	// ReadHeaderTimeout. It is valid to use them both.
+	// ReadTimeout 是读取整个请求（包括请求体）的最大持续时间。零或负值表示没有超时。
+	// 因为 ReadTimeout 不允许 Handlers 对每个请求体的可接受截止时间或上传速率做出每个请求的决策，
+	// 所以大多数用户会更喜欢使用 ReadHeaderTimeout。同时使用两者是有效的。
 	ReadTimeout time.Duration
 
 	// ReadHeaderTimeout is the amount of time allowed to read
@@ -3022,6 +3342,9 @@ type Server struct {
 	// is considered too slow for the body. If zero, the value of
 	// ReadTimeout is used. If negative, or if zero and ReadTimeout
 	// is zero or negative, there is no timeout.
+	// ReadHeaderTimeout 是允许读取请求头的最大时间。读取头后，连接的读取截止时间会重置，
+	// 并且 Handler 可以决定对于请求体来说什么速度太慢。如果为零，则使用 ReadTimeout 的值。
+	// 如果为负数，或者如果为零且 ReadTimeout 为零或负数，则没有超时。
 	ReadHeaderTimeout time.Duration
 
 	// WriteTimeout is the maximum duration before timing out
@@ -3029,12 +3352,17 @@ type Server struct {
 	// request's header is read. Like ReadTimeout, it does not
 	// let Handlers make decisions on a per-request basis.
 	// A zero or negative value means there will be no timeout.
+	// WriteTimeout 是响应写入超时之前的最大持续时间。每当读取新请求的头时，它都会重置。
+	// 像 ReadTimeout 一样，它不允许 Handlers 基于每个请求做出决策。
+	// 零或负值表示没有超时。
 	WriteTimeout time.Duration
 
 	// IdleTimeout is the maximum amount of time to wait for the
 	// next request when keep-alives are enabled. If zero, the value
 	// of ReadTimeout is used. If negative, or if zero and ReadTimeout
 	// is zero or negative, there is no timeout.
+	// IdleTimeout 是在启用 keep-alive 时等待下一个请求的最大时间。如果为零，则使用 ReadTimeout 的值。
+	// 如果为负数，或者如果为零且 ReadTimeout 为零或负数，则没有超时。
 	IdleTimeout time.Duration
 
 	// MaxHeaderBytes controls the maximum number of bytes the
@@ -3042,6 +3370,8 @@ type Server struct {
 	// values, including the request line. It does not limit the
 	// size of the request body.
 	// If zero, DefaultMaxHeaderBytes is used.
+	// MaxHeaderBytes 控制服务器将读取的请求头键和值的最大字节数，包括请求行。它不限制请求体的大小。
+	// 如果为零，则使用 DefaultMaxHeaderBytes。
 	MaxHeaderBytes int
 
 	// TLSNextProto optionally specifies a function to take over
@@ -3053,17 +3383,24 @@ type Server struct {
 	// automatically closed when the function returns.
 	// If TLSNextProto is not nil, HTTP/2 support is not enabled
 	// automatically.
+	// TLSNextProto 可选地指定一个函数，用于在发生 ALPN 协议升级时接管提供的 TLS 连接的所有权。
+	// map 键是协商的协议名称。Handler 参数应用于处理 HTTP 请求，如果尚未设置，将初始化 Request 的 TLS 和 RemoteAddr。
+	// 函数返回时，连接将自动关闭。如果 TLSNextProto 不为 nil，则不会自动启用 HTTP/2 支持。
 	TLSNextProto map[string]func(*Server, *tls.Conn, Handler)
 
 	// ConnState specifies an optional callback function that is
 	// called when a client connection changes state. See the
 	// ConnState type and associated constants for details.
+	// ConnState 指定一个可选的回调函数，该函数在客户端连接状态更改时被调用。
+	// 有关详细信息，请参见 ConnState 类型和相关的常量。
 	ConnState func(net.Conn, ConnState)
 
 	// ErrorLog specifies an optional logger for errors accepting
 	// connections, unexpected behavior from handlers, and
 	// underlying FileSystem errors.
 	// If nil, logging is done via the log package's standard logger.
+	// ErrorLog 指定一个可选的记录器，用于记录接受连接时的错误、处理程序的意外行为以及底层文件系统错误。
+	// 如果为 nil，则通过 log 包的标准记录器完成日志记录。
 	ErrorLog *log.Logger
 
 	// BaseContext optionally specifies a function that returns
@@ -3072,26 +3409,31 @@ type Server struct {
 	// about to start accepting requests.
 	// If BaseContext is nil, the default is context.Background().
 	// If non-nil, it must return a non-nil context.
+	// BaseContext 可选地指定一个函数，该函数返回此服务器上接收请求的基本上下文。
+	// 提供的 Listener 是即将开始接受请求的特定 Listener。
+	// 如果 BaseContext 为 nil，则默认值为 context.Background()。
+	// 如果非 nil，则必须返回一个非 nil 的上下文。
 	BaseContext func(net.Listener) context.Context
 
 	// ConnContext optionally specifies a function that modifies
 	// the context used for a new connection c. The provided ctx
 	// is derived from the base context and has a ServerContextKey
 	// value.
+	// ConnContext 可选地指定一个函数，该函数修改用于新连接 c 的上下文。提供的 ctx 派生自基本上下文，并具有 ServerContextKey 值。
 	ConnContext func(ctx context.Context, c net.Conn) context.Context
 
-	inShutdown atomic.Bool // true when server is in shutdown
+	inShutdown atomic.Bool // true when server is in shutdown  // inShutdown 是一个原子布尔值，当服务器正在关闭时为 true
 
-	disableKeepAlives atomic.Bool
-	nextProtoOnce     sync.Once // guards setupHTTP2_* init
-	nextProtoErr      error     // result of http2.ConfigureServer if used
+	disableKeepAlives atomic.Bool // disableKeepAlives 是一个原子布尔值，用于禁用 keep-alive 连接
+	nextProtoOnce     sync.Once   // guards setupHTTP2_* init // nextProtoOnce 用于保护 setupHTTP2_* 的初始化，确保只执行一次
+	nextProtoErr      error       // result of http2.ConfigureServer if used // nextProtoErr 是 http2.ConfigureServer 的结果，如果使用了 HTTP/2 配置
 
-	mu         sync.Mutex
-	listeners  map[*net.Listener]struct{}
-	activeConn map[*conn]struct{}
-	onShutdown []func()
+	mu         sync.Mutex                 // mu 是一个互斥锁，用于保护 listeners, activeConn, onShutdown 等字段
+	listeners  map[*net.Listener]struct{} // listeners 存储服务器正在监听的 net.Listener 集合
+	activeConn map[*conn]struct{}         // activeConn 存储服务器当前活跃的连接集合
+	onShutdown []func()                   // onShutdown 存储服务器关闭时需要执行的函数列表
 
-	listenerGroup sync.WaitGroup
+	listenerGroup sync.WaitGroup // listenerGroup 用于等待所有 listener 关闭
 }
 
 // Close immediately closes all active net.Listeners and any
@@ -3103,25 +3445,35 @@ type Server struct {
 //
 // Close returns any error returned from closing the [Server]'s
 // underlying Listener(s).
+// Close 方法立即关闭所有活动的 net.Listeners 以及处于 [StateNew]、[StateActive] 或 [StateIdle] 状态的任何连接。
+// 要实现优雅关闭，请使用 [Server.Shutdown]。
+//
+// Close 方法不会尝试关闭（甚至不知道）任何被劫持的连接，例如 WebSockets。
+//
+// Close 方法返回关闭 [Server] 的底层 Listener 时返回的任何错误。
 func (srv *Server) Close() error {
-	srv.inShutdown.Store(true)
-	srv.mu.Lock()
-	defer srv.mu.Unlock()
-	err := srv.closeListenersLocked()
+	srv.inShutdown.Store(true) // 设置 inShutdown 标志为 true，表示服务器正在关闭 Set the inShutdown flag to true, indicating that the server is closing
+	srv.mu.Lock()              // 获取互斥锁，保护 listeners 和 activeConn 字段 Acquire mutex to protect listeners and activeConn fields
+	defer srv.mu.Unlock()      // 延迟释放互斥锁 Defer releasing the mutex
+
+	err := srv.closeListenersLocked() // 关闭所有 listener Close all listeners
 
 	// Unlock srv.mu while waiting for listenerGroup.
 	// The group Add and Done calls are made with srv.mu held,
 	// to avoid adding a new listener in the window between
 	// us setting inShutdown above and waiting here.
-	srv.mu.Unlock()
-	srv.listenerGroup.Wait()
-	srv.mu.Lock()
+	// 在等待 listenerGroup 时释放 srv.mu。
+	// group 的 Add 和 Done 调用是在持有 srv.mu 的情况下进行的，
+	// 以避免在我们设置上面的 inShutdown 和在此处等待之间的窗口中添加新的 listener。
+	srv.mu.Unlock()          // 释放互斥锁 Unlock the mutex
+	srv.listenerGroup.Wait() // 等待所有 listener 关闭 Wait for all listeners to close
+	srv.mu.Lock()            // 重新获取互斥锁 Reacquire the mutex
 
-	for c := range srv.activeConn {
-		c.rwc.Close()
-		delete(srv.activeConn, c)
+	for c := range srv.activeConn { // 遍历所有活跃的连接 Iterate over all active connections
+		c.rwc.Close()             // 关闭连接 Close the connection
+		delete(srv.activeConn, c) // 从活跃连接集合中删除连接 Remove the connection from the active connection set
 	}
-	return err
+	return err // 返回关闭 listener 时返回的错误 Return the error returned when closing the listener
 }
 
 // shutdownPollIntervalMax is the max polling interval when checking
@@ -3351,19 +3703,26 @@ func AllowQuerySemicolons(h Handler) Handler {
 //
 // ListenAndServe always returns a non-nil error. After [Server.Shutdown] or [Server.Close],
 // the returned error is [ErrServerClosed].
+// ListenAndServe 监听 TCP 网络地址 srv.Addr，然后调用 Serve 方法来处理传入连接上的请求。
+// 接受的连接被配置为启用 TCP keep-alive。
+//
+// 如果 srv.Addr 为空，则使用 ":http"。
+//
+// ListenAndServe 始终返回一个非 nil 的 error。在调用 Server.Shutdown 或 Server.Close 之后，
+// 返回的 error 是 ErrServerClosed。
 func (srv *Server) ListenAndServe() error {
-	if srv.shuttingDown() {
-		return ErrServerClosed
+	if srv.shuttingDown() { // 检查服务器是否正在关闭
+		return ErrServerClosed // 如果服务器正在关闭，则返回 ErrServerClosed 错误
 	}
-	addr := srv.Addr
-	if addr == "" {
-		addr = ":http"
+	addr := srv.Addr // 获取服务器地址
+	if addr == "" {  // 如果地址为空
+		addr = ":http" // 设置默认地址为 ":http"
 	}
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return err
+	ln, err := net.Listen("tcp", addr) // 在 TCP 地址上监听
+	if err != nil {                    // 如果监听失败
+		return err // 返回错误
 	}
-	return srv.Serve(ln)
+	return srv.Serve(ln) // 使用 listener 提供服务
 }
 
 var testHookServerServe func(*Server, net.Listener) // used if non-nil
@@ -3616,9 +3975,16 @@ func logf(r *Request, format string, args ...any) {
 // The handler is typically nil, in which case [DefaultServeMux] is used.
 //
 // ListenAndServe always returns a non-nil error.
+//
+// ListenAndServe 监听 TCP 网络地址 addr，然后调用 Serve 方法，使用 handler 处理传入连接上的请求。
+// 接受的连接被配置为启用 TCP keep-alive。
+//
+// handler 通常为 nil，在这种情况下，将使用 DefaultServeMux。
+//
+// ListenAndServe 始终返回一个非 nil 的 error。
 func ListenAndServe(addr string, handler Handler) error {
-	server := &Server{Addr: addr, Handler: handler}
-	return server.ListenAndServe()
+	server := &Server{Addr: addr, Handler: handler} // 创建一个新的 Server 实例，设置地址和处理器
+	return server.ListenAndServe()                  // 调用 Server 实例的 ListenAndServe 方法开始监听和处理请求
 }
 
 // ListenAndServeTLS acts identically to [ListenAndServe], except that it
@@ -3626,9 +3992,11 @@ func ListenAndServe(addr string, handler Handler) error {
 // matching private key for the server must be provided. If the certificate
 // is signed by a certificate authority, the certFile should be the concatenation
 // of the server's certificate, any intermediates, and the CA's certificate.
+// ListenAndServeTLS 的行为与 ListenAndServe 相同，除了它期望 HTTPS 连接。此外，必须提供包含服务器证书和匹配私钥的文件。
+// 如果证书由证书颁发机构签名，则 certFile 应该是服务器证书、任何中间证书和 CA 证书的串联。
 func ListenAndServeTLS(addr, certFile, keyFile string, handler Handler) error {
-	server := &Server{Addr: addr, Handler: handler}
-	return server.ListenAndServeTLS(certFile, keyFile)
+	server := &Server{Addr: addr, Handler: handler}    // 创建一个新的 Server 实例，设置地址和处理器
+	return server.ListenAndServeTLS(certFile, keyFile) // 调用 Server 实例的 ListenAndServeTLS 方法开始监听和处理 TLS 请求
 }
 
 // ListenAndServeTLS listens on the TCP network address srv.Addr and
@@ -3646,31 +4014,43 @@ func ListenAndServeTLS(addr, certFile, keyFile string, handler Handler) error {
 //
 // ListenAndServeTLS always returns a non-nil error. After [Server.Shutdown] or
 // [Server.Close], the returned error is [ErrServerClosed].
+// ListenAndServeTLS 监听 TCP 网络地址 srv.Addr，然后调用 ServeTLS 来处理传入的 TLS 连接请求。
+// 接受的连接被配置为启用 TCP keep-alive。
+//
+// 如果既没有配置 [Server] 的 TLSConfig.Certificates，也没有配置 TLSConfig.GetCertificate，
+// 则必须提供包含服务器证书和匹配私钥的文件名。如果证书由证书颁发机构签名，
+// 则 certFile 应该是服务器证书、任何中间证书和 CA 证书的串联。
+//
+// 如果 srv.Addr 为空，则使用 ":https"。
+//
+// ListenAndServeTLS 始终返回一个非 nil 的 error。在 [Server.Shutdown] 或 [Server.Close] 之后，
+// 返回的 error 是 [ErrServerClosed]。
 func (srv *Server) ListenAndServeTLS(certFile, keyFile string) error {
-	if srv.shuttingDown() {
-		return ErrServerClosed
+	if srv.shuttingDown() { // 检查服务器是否正在关闭
+		return ErrServerClosed // 如果服务器正在关闭，则返回 ErrServerClosed 错误
 	}
-	addr := srv.Addr
-	if addr == "" {
-		addr = ":https"
-	}
-
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return err
+	addr := srv.Addr // 获取服务器地址
+	if addr == "" {  // 如果地址为空
+		addr = ":https" // 设置默认地址为 ":https"
 	}
 
-	defer ln.Close()
+	ln, err := net.Listen("tcp", addr) // 在 TCP 地址上监听
+	if err != nil {                    // 如果监听失败
+		return err // 返回错误
+	}
 
-	return srv.ServeTLS(ln, certFile, keyFile)
+	defer ln.Close() // 延迟关闭 listener
+
+	return srv.ServeTLS(ln, certFile, keyFile) // 使用 TLS 配置服务 listener
 }
 
 // setupHTTP2_ServeTLS conditionally configures HTTP/2 on
 // srv and reports whether there was an error setting it up. If it is
 // not configured for policy reasons, nil is returned.
+// setupHTTP2_ServeTLS 有条件地在 srv 上配置 HTTP/2，并报告设置过程中是否发生错误。如果由于策略原因未配置，则返回 nil。
 func (srv *Server) setupHTTP2_ServeTLS() error {
-	srv.nextProtoOnce.Do(srv.onceSetNextProtoDefaults)
-	return srv.nextProtoErr
+	srv.nextProtoOnce.Do(srv.onceSetNextProtoDefaults) // 确保只设置一次 NextProto 的默认值。Ensure that NextProto defaults are set only once.
+	return srv.nextProtoErr                            // 返回设置 NextProto 过程中可能发生的错误。Return any errors that may have occurred while setting NextProto.
 }
 
 // setupHTTP2_Serve is called from (*Server).Serve and conditionally
