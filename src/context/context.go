@@ -353,6 +353,22 @@ func Cause(c Context) error {
 //
 // If ctx has a "AfterFunc(func()) func() bool" method,
 // AfterFunc will use it to schedule the call.
+// 
+// AfterFunc 函数安排在 ctx 完成（被取消或超时）后，在一个新的 goroutine 中调用函数 f。
+// 如果在调用 AfterFunc 时 ctx 已经完成了，那么 AfterFunc 会立刻在一个新的 goroutine 中调用 f。
+//
+// 对同一个 context 多次调用 AfterFunc 是相互独立的；一次调用不会替换另一次。
+//
+// 调用 AfterFunc 返回的 stop 函数会停止 ctx 与 f 的关联。
+// 如果这次调用成功阻止了 f 的运行，stop 函数会返回 true。
+// 如果 stop 函数返回 false，则意味着以下两种情况之一：
+//   - context 已经完成，f 已经在它自己的 goroutine 中开始运行了；
+//   - f 之前已经被停止了。
+// stop 函数在返回前，不会等待 f 执行完成。
+// 如果调用者需要知道 f 是否已完成，它必须与 f 进行显式地协调（例如通过 channel）。
+//
+// 如果 ctx 实现了一个名为 "AfterFunc(func()) func() bool" 的方法，
+// 那么这里的 AfterFunc 函数将会使用 ctx 自身的那个方法来安排调用。
 func AfterFunc(ctx Context, f func()) (stop func() bool) {
 	a := &afterFuncCtx{
 		f: f,
