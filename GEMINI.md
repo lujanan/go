@@ -14,6 +14,8 @@
 *   **Go Channel 学习笔记和面试问题**: `/home/go/src/go/learning_doc/channel.md`
 *   **Go Slice 学习笔记和面试问题**: `/home/go/src/go/learning_doc/slice.md`
 *   **Go Map 学习笔记和面试问题**: `/home/go/src/go/learning_doc/map.md`
+*   **Go Array 学习笔记和面试问题**: `/home/go/src/go/learning_doc/array.md`
+*   **Go Concurrency 学习笔记和面试问题**: `/home/go/src/go/learning_doc/concurrency.md`
 
 在下次会话开始时，请加载上述文件内容作为上下文。
 --- End of Context from: GEMINI.md ---
