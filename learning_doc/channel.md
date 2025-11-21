@@ -560,6 +560,154 @@ Go 语言中的 channel 可以与定时器（timer）进行交互，实现 `time
 
 Go 语言通过这种机制高效地管理 channel 上的时间相关操作，确保 goroutine 的正确阻塞和解除阻塞，并可靠地传递定时器事件。
 
+### 7. `select` 的调度机制
+
+`select` 语句的核心行为可以总结为：在多个 `case` 中，选择一个可以立即执行的（非阻塞的）`case` 来执行。如果多个 `case` 同时就绪，它会**伪随机**地选择一个。
+
+我们通过 `src/runtime/select.go` 中的 `selectgo` 函数来理解其内部实现。
+
+**`selectgo` 函数签名:** 
+
+```go
+func selectgo(cas0 *scase, order0 *uint16, ncases int) (int, bool)
+```
+
+**参数解释:** 
+
+*   `cas0`: 一个 `scase` 结构体数组的指针，每个 `scase` 代表 `select` 中的一个 `case`（包括 `send`, `recv`, `default`）。
+*   `order0`: 一个用于存储 `case` 随机顺序的数组。
+*   `ncases`: `case` 的数量。
+
+**`scase` 结构体:** 
+
+```go
+type scase struct {
+	c    *hchan         // case 关联的 channel
+	elem unsafe.Pointer // 发送或接收数据的元素指针
+	kind uint16         // case 的类型 (caseNil, caseRecv, caseSend, caseDefault)
+	// ...
+}
+```
+
+**`selectgo` 核心执行流程:** 
+
+1.  **随机化 `case` 顺序**: `selectgo` 首先会生成一个随机的 `case` 检查顺序，并将其存储在 `order0` 数组中。这是实现“伪随机选择”的关键。它确保了当多个 `case` 同时就绪时，每个 `case` 都有公平的被选中的机会，避免了饥饿问题。
+
+2.  **第一轮：查找就绪的 `case` (非阻塞)**: 
+    *   `selectgo` 会按照刚刚生成的随机顺序遍历所有 `case`。
+    *   对于 `caseRecv` (接收操作): 检查 channel `c` 是否有数据可读（缓冲区有数据，或有等待的发送者）或者 channel 已经关闭。
+    *   对于 `caseSend` (发送操作): 检查 channel `c` 是否可以写入（缓冲区未满，或有等待的接收者）。
+    *   如果找到了一个就绪的 `case`，`selectgo` 会立即执行对应的操作（数据拷贝等），然后返回该 `case` 的索引。
+
+3.  **第二轮：处理 `default` 或阻塞**: 
+    *   如果第一轮遍历没有发现任何就绪的 `case`，`selectgo` 会检查是否存在 `default` 分支 (`kind == caseDefault`)。
+    *   **如果存在 `default`**: `selectgo` 会立即返回 `default` 分支的索引，实现非阻塞行为。
+    *   **如果不存在 `default`**: 这是最复杂的情况。`selectgo` 必须将当前 Goroutine 阻塞。
+        *   它会再次遍历所有 `case`，将当前 Goroutine 封装成 `sudog` 并加入到每个 `case` 关联的 channel (`c`) 的 `recvq` 或 `sendq` 等待队列中。
+        *   调用 `gopark` 将当前 Goroutine 挂起。
+
+4.  **被唤醒**: 
+    *   当其他 Goroutine 对某个 channel 进行了操作（例如，向一个空的 channel 发送了数据，或者从一个满的 channel 接收了数据），`selectgo` 中被阻塞的 Goroutine 会被唤醒。
+    *   唤醒后，`selectgo` 会确定是哪个 `case` 导致了唤醒，并完成相应的操作。
+    *   在返回之前，它还会清理之前加入到其他未被选中的 channel 等待队列中的 `sudog`。
+
+**要点总结**: 
+
+*   **随机性**: 通过在开始时对 `case` 的评估顺序进行洗牌，`select` 实现了公平性。
+*   **两阶段检查**: 先进行一次非阻塞的快速检查，如果没有任何 channel 就绪，再决定是执行 `default` 还是将 Goroutine 加入所有相关 channel 的等待队列并挂起。
+*   **原子性**: `select` 的整个查找、阻塞、唤醒过程都在运行时层面由 `selectgo` 函数原子性地完成，对开发者来说是透明的。
+
+这个设计使得 `select` 在功能强大的同时，也保证了高效和公平。
+
+### 8. 利用 `nil` Channel 控制 `select` 的 `case`
+
+首先，我们需要了解对一个 `nil` channel 的操作会发生什么：
+
+*   **向 `nil` channel 发送数据 (`<-nil`)**: 永久阻塞。
+*   **从 `nil` channel 接收数据 (`nil <- data`)**: 永久阻塞。
+*   **关闭 `nil` channel (`close(nil)`)**: 引发 panic。
+
+关键在于前两条：**对 `nil` channel 的任何读写操作都会永久阻塞**。
+
+当这个特性与 `select` 语句结合时，它就变成了一个强大的控制工具。因为 `select` 只会选择**不会阻塞**的 `case`，所以一个关联了 `nil` channel 的 `case` 将**永远不会被选中**。
+
+这允许我们在循环中动态地“启用”或“禁用”某个 `case`。
+
+#### 实用场景：带缓冲的非阻塞发送
+
+想象一个场景：你有一个生产者需要向一个消费者发送一系列事件。消费者处理事件需要一些时间。我们不希望在消费者繁忙时（即 Channel 已满）让生产者阻塞，但我们也不想简单地丢弃这个事件。我们希望生产者能“记住”这个待办事件，并在消费者可用时立即发送它。
+
+这时，`nil` channel 模式就派上用场了。
+
+**示例代码:** 
+
+```go
+package main
+
+import (
+	"fmt"
+	"time"
+)
+
+func main() {
+	source := make(chan string) // 源源不断产生新事件的 Channel
+	consumer := make(chan string, 1) // 消费者的 Channel，缓冲区为 1
+
+	// 模拟事件产生
+	go func() {
+		for i := 0; ; i++ {
+			source <- fmt.Sprintf("Event %d", i)
+			time.Sleep(500 * time.Millisecond) // 每 500ms 产生一个事件
+		}
+	}()
+
+	// 模拟消费者
+	go func() {
+		for msg := range consumer {
+			fmt.Printf("  => Consumed: %s\n", msg)
+			time.Sleep(2 * time.Second) // 消费者处理一个事件需要 2 秒
+		}
+	}()
+
+	var eventToSend string    // 存储待发送的事件
+	var sendChan chan<- string // 用于发送的 Channel
+
+	// 初始时，没有待办事件，所以发送 Channel 为 nil
+	sendChan = nil
+
+	for {
+		select {
+		case eventToSend = <-source:
+			// 收到一个新事件，将其存起来，并“启用”发送 case
+			fmt.Printf("Received new event: %s. Preparing to send.\n", eventToSend)
+			sendChan = consumer
+
+		case sendChan <- eventToSend:
+			// 成功发送事件，将发送 case“禁用”，直到下一个新事件到来
+			fmt.Printf("Sent event: %s\n", eventToSend)
+			sendChan = nil
+		}
+	}
+}
+```
+
+**执行流程分析:** 
+
+1.  **初始状态**: `sendChan` 被初始化为 `nil`。在 `for` 循环的 `select` 中，`case sendChan <- eventToSend:` 这个分支是“禁用”的，因为它会永久阻塞。`select` 唯一能做的就是等待 `case eventToSend = <-source:`。
+
+2.  **接收新事件**: 当一个新事件从 `source` Channel 到达时 (`"Event 0"`)，第一个 `case` 被选中。
+    *   `eventToSend` 被赋值为 `"Event 0"`。
+    *   `sendChan` 被赋值为 `consumer` (一个有效的 Channel)。
+    *   现在，`select` 中的两个 `case` 都被“启用”了。
+
+3.  **发送事件**: 在下一次 `for` 循环中，`select` 会看哪个 `case` 就绪。
+    *   如果 `consumer` Channel 未满，`case sendChan <- eventToSend:` 就绪。`select` 会选择它，将 `"Event 0"` 发送出去。然后，**关键的一步**发生了：`sendChan` 被重新设置为 `nil`，这个 `case` 再次被“禁用”。循环回到等待新事件的状态。
+    *   如果此时 `consumer` Channel 已满（因为消费者处理慢），`case sendChan <- eventToSend:` 会阻塞。但与此同时，`source` Channel 可能已经准备好发送下一个事件了 (`"Event 1"`)。`select` 可能会选择第一个 `case`，用 `"Event 1"` 覆盖 `eventToSend`。这展示了如何处理背压（back-pressure）问题，尽管在这个特定例子中我们可能更希望优先发送旧事件。
+
+通过将 channel 在 `nil` 和一个有效 channel 之间切换，我们精确地控制了 `select` 的行为，只有在“有事可做”（即 `eventToSend` 有值）时，才尝试发送。
+
+这个模式非常优雅，是 Go 并发编程中的一个重要技巧。
+
 ---
 
 ## 2025-11-01: Go Channel 面试常见问题及参考答案
@@ -650,3 +798,9 @@ Channel 是 Go 语言并发模型的核心，也是面试中的高频考点。�
         3.  这个 `sudog` 结构体会被加入到 `hchan` 的 `sendq`（发送等待队列）或 `recvq`（接收等待队列）中。
         4.  Go 调度器调用 `gopark` 函数，将当前 Goroutine 挂起（状态变为 `_Gwaiting`），并让出 CPU。
         5.  当另一个 Goroutine 完成了匹配的操作时（例如，从满的 Channel 接收，或向空的 Channel 发送），它会从等待队列中取出一个 `sudog`，并将数据直接拷贝给它（如果适用），然后调用 `goready` 将被阻塞的 Goroutine 重新放回可运行队列，等待调度器执行。
+
+*   **接收操作时，如果缓冲区有数据，同时也有等待的发送者，Go 会如何选择？为什么？**
+    *   **回答要点**：Go 会优先选择**唤醒等待的发送者**。这是一个在“数据FIFO”和“Goroutine调度效率”之间的权衡，Go 的设计者选择了后者。
+        1.  **原因一：提升系统吞吐量 (Throughput)**。当一个接收者就绪时，如果它去匹配一个等待的发送者，那么这次操作可以让**两个** Goroutine（接收者和发送者）都继续向前执行。而如果只是从缓冲区取数据，则只能让接收者这**一个** Goroutine 继续执行。优先匹配等待的 Goroutine 能最大化地盘活正在阻塞的 Goroutine，提升了整个系统的并发效率。
+        2.  **原因二：对 Goroutine 的公平性 (Fairness)**。虽然从“数据”的视角看，缓冲区的数据更早到达，但从“Goroutine”的视角看，`sendq` 队列中的发送者已经被阻塞，处于等待状态。Go 的调度器倾向于优先解决正在阻塞的调度实体，防止它们被“饿死”。
+    *   **实现机制**：对于带缓冲的 Channel，这个过程表现为一个高效的“数据交换”：接收者从缓冲区头部拿走一个数据，同时被唤醒的发送者立即将自己的数据放入缓冲区尾部，整个过程在持有 Channel 锁的情况下原子性地完成。
