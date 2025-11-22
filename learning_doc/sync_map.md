@@ -350,3 +350,43 @@ func (m *Map) Range(f func(key, value any) bool) {
 *   在非上述优化场景下，传统的 `map` 加 `sync.RWMutex` 组合通常是更好的选择，因为它更直观，并且提供了类型安全。
 
 理解 `sync.Map` 的内部工作原理，可以帮助我们更好地判断何时选择它，以及如何避免潜在的问题。
+
+---
+## 5. 常见问题解答 (FAQ)
+
+### Q: `sync.Map` 中的 `read.m` 和 `dirty` 中的 `*entry` 是指向同一个地址吗？
+
+**A:** 是的，对于一个已经存在于 `sync.Map` 中的键值对，其在 `read.m` 和 `dirty` 中的 `*entry` 指针指向的是同一个内存地址。因此，通过原子操作更新这个 `*entry` 内部的值，无论从 `read` 还是 `dirty` 访问，都能看到最新的值。
+
+**详细解释:**
+
+1.  **`read` 和 `dirty` 的关系**
+    *   `read` (`readOnly` struct): 一个用于无锁快速读取的结构，其内部的 `map` 是不可变的。
+    *   `dirty` (`map[any]*entry`): 一个需要加锁才能访问的普通 `map`，用于写入和更新。它包含了 `read` map 的所有数据以及任何新的变更。
+    *   **关键点**: 当 `dirty` map 包含 `read` map 的数据时，它并**不是深拷贝**，而是**浅拷贝**。对于同一个 key，`read.m` 和 `dirty` map 中的 `*entry` 指针是完全相同的。
+
+2.  **更新操作 (`Store`) 的流程**
+    *   `Store` 方法会优先尝试一个“快速路径”：不加锁地在 `read.m` 中查找 key。
+    *   如果 key 存在，它会尝试使用**原子操作** (`atomic.Pointer.CompareAndSwap`) 来直接更新这个 `*entry` 内部指向 value 的指针 `p`。
+    *   因为 `dirty` map 中的 `*entry` 是同一个指针，所以这个原子更新会立即对两个 map 同时可见。整个过程无需动用互斥锁，效率极高。
+
+3.  **结论**
+    你不能直接修改 `read.m` 这个 map 结构，但 `sync.Map` 的设计允许你通过原子操作去修改 `read.m` 中 `*entry` 所指向的**内容**。由于 `dirty` map 共享了这些 `*entry` 指针，所以这个修改对于 `dirty` map 来说也是即时可见的。只有当快速路径失败时（如 key 不存在于 `read.m` 中），`sync.Map` 才会加锁并在 `dirty` map 上进行操作。
+
+### Q: 为什么 `dirtyLocked()` 函数开头 `if m.dirty != nil` (Go 1.23.6 @src/sync/map.go 第 567 行) 的判断是必要的？当 `Swap` 方法（第 383 行 `if !read.amended`）调用它时，`m.dirty` 应该总是 `nil` 吧？
+
+**A:** 您对代码执行路径的观察非常准确。在 `Swap` 和 `LoadOrStore` 方法中，当满足 `if !read.amended` 这个条件并进而调用 `m.dirtyLocked()` 时，`m.dirty` 在那一刻**确实是 `nil`**。
+
+这个检查的必要性主要体现在以下两个软件工程原则：
+
+1.  **防御性编程 (Defensive Programming)**：
+    `dirtyLocked` 是一个内部辅助函数，其核心职责是“确保 `m.dirty` map 被初始化并准备好”。作为一个独立且负责任的函数，它不应该假设调用者已经验证了 `m.dirty` 是否为 `nil`。通过在函数内部进行 `if m.dirty != nil { return }` 检查，`dirtyLocked` 函数变得**自洽、健壮且幂等**。这意味着无论在何种条件下被调用，它都能安全地执行，并且多次调用与一次调用的效果相同（如果 `dirty` 已经初始化，就直接返回）。
+
+2.  **代码的可维护性和未来扩展性**：
+    软件项目是动态变化的。
+    *   **未来的调用者**：即使当前的 `Swap` 或 `LoadOrStore` 方法在调用 `dirtyLocked` 时 `m.dirty` 总是 `nil`，但在未来，可能会有新的方法或新的代码路径需要在 `m.dirty` 可能已经非 `nil` 的情况下调用 `dirtyLocked`。这个检查可以防止未来因为调用 `dirtyLocked` 时疏忽了 `m.dirty` 的状态而引入 bug。
+    *   **内部逻辑变更**：如果 `dirtyLocked` 内部的逻辑在未来发生变化，这个检查也能提供一层安全保障，防止意外的重新初始化或错误的行为。
+
+**结论**:
+
+尽管从 `Swap` 方法的特定调用上下文来看，`dirtyLocked` 函数开头的 `if m.dirty != nil` 检查在功能上似乎是多余的，但它是一个非常经典的防御性编程实践。它牺牲了一点点理论上可以忽略的性能开销，换取了 `dirtyLocked` 函数的高度鲁棒性、可维护性和对未来变化的适应性。这是高质量基础库代码的典型特征，旨在确保即使在复杂和动态的环境中，核心组件也能稳定可靠地运行。
